@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.2.50](https://github.com/archestra-ai/archestra/compare/platform-v1.2.48...platform-v1.2.50) (2026-05-15)
+
+
+### Features
+
+* mcp catalog presets ([#4402](https://github.com/archestra-ai/archestra/issues/4402)) ([95644e2](https://github.com/archestra-ai/archestra/commit/95644e2ccdcca9ba97c836bb6edeea14bc587328))
+* support Azure inference URL overrides ([#4682](https://github.com/archestra-ai/archestra/issues/4682)) ([dba30ee](https://github.com/archestra-ai/archestra/commit/dba30eed5e6ed5c5b5221a1164519934b85f06e2))
+* support per-limit cleanup intervals and default user limits ([#4668](https://github.com/archestra-ai/archestra/issues/4668)) ([42ae7dd](https://github.com/archestra-ai/archestra/commit/42ae7dd33c025c20fbbd75f5f4e6e005c8cd029a))
+
+
+### Bug Fixes
+
+* make claude code work ([#4686](https://github.com/archestra-ai/archestra/issues/4686)) ([b646834](https://github.com/archestra-ai/archestra/commit/b646834e642d34bcda759c78f73567f012dde625))
+* stop double-prefixing path in Anthropic proxy fallback ([#4662](https://github.com/archestra-ai/archestra/issues/4662)) ([e23d2fd](https://github.com/archestra-ai/archestra/commit/e23d2fd82cffb9b6c4c1ffdfc718c5972ba8ad96))
+
+
+### Miscellaneous Chores
+
+* backport xml hotfix ([#4677](https://github.com/archestra-ai/archestra/issues/4677)) ([be917b6](https://github.com/archestra-ai/archestra/commit/be917b664868323131d33b04e630824ba667abff))
+* **release:** bump version ([#4678](https://github.com/archestra-ai/archestra/issues/4678)) ([4852e22](https://github.com/archestra-ai/archestra/commit/4852e22b06942c2293f1da7dfe7f4c6c88f19539))
+
 ## [1.2.48](https://github.com/archestra-ai/archestra/compare/platform-v1.2.47...platform-v1.2.48) (2026-05-14)
 
 
