@@ -1,0 +1,263 @@
+```python
+# archestra/agents/template_catalog.py
+
+"""
+Agent Template Catalog - Quickstart catalog of pre-built agent templates.
+
+This module provides a catalog of pre-configured agent templates that users
+can deploy with a single click. Each template includes:
+- System prompt
+- Model configuration
+- Tool assignments
+- MCP server installation instructions
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class AgentCategory(Enum):
+    """Categories for agent templates."""
+    PRODUCTIVITY = "productivity"
+    DEVELOPMENT = "development"
+    DATA_SCIENCE = "data_science"
+    CUSTOMER_SUPPORT = "customer_support"
+    CONTENT_CREATION = "content_creation"
+    RESEARCH = "research"
+    DEVOPS = "devops"
+    OTHER = "other"
+
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to be installed with the agent."""
+    name: str
+    url: str
+    version: Optional[str] = None
+    auth_type: Optional[str] = None
+    config: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ToolAssignment:
+    """A tool assigned to the agent template."""
+    tool_name: str
+    description: str
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    enabled: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AgentTemplate:
+    """Represents a pre-built agent template."""
+    id: str
+    name: str
+    description: str
+    category: AgentCategory
+    system_prompt: str
+    model: str
+    model_parameters: Dict[str, Any] = field(default_factory=dict)
+    tools: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+    author: Optional[str] = None
+    is_official: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "category": self.category.value,
+            "system_prompt": self.system_prompt,
+            "model": self.model,
+            "model_parameters": self.model_parameters,
+            "tools": [t.to_dict() for t in self.tools],
+            "mcp_servers": [s.to_dict() for s in self.mcp_servers],
+            "tags": self.tags,
+            "version": self.version,
+            "author": self.author,
+            "is_official": self.is_official,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize dictionary to template."""
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data["description"],
+            category=AgentCategory(data["category"]),
+            system_prompt=data["system_prompt"],
+            model=data["model"],
+            model_parameters=data.get("model_parameters", {}),
+            tools=[ToolAssignment(**t) for t in data.get("tools", [])],
+            mcp_servers=[MCPServerConfig(**s) for s in data.get("mcp_servers", [])],
+            tags=data.get("tags", []),
+            version=data.get("version", "1.0.0"),
+            author=data.get("author"),
+            is_official=data.get("is_official", True),
+        )
+
+
+class TemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Provides methods to list, search, and retrieve templates.
+    Supports adding custom templates and filtering by category/tags.
+    """
+
+    def __init__(self, templates: Optional[List[AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        if templates:
+            for template in templates:
+                self._templates[template.id] = template
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """Add a template to the catalog."""
+        if template.id in self._templates:
+            logger.warning(f"Overwriting existing template: {template.id}")
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        """Remove a template from the catalog. Returns True if removed."""
+        return self._templates.pop(template_id, None) is not None
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """Get a template by ID."""
+        return self._templates.get(template_id)
+
+    def list_templates(
+        self,
+        category: Optional[AgentCategory] = None,
+        tags: Optional[List[str]] = None,
+        search: Optional[str] = None,
+    ) -> List[AgentTemplate]:
+        """
+        List templates with optional filtering.
+
+        Args:
+            category: Filter by category.
+            tags: Filter by tags (template must have all specified tags).
+            search: Search in name and description (case-insensitive).
+
+        Returns:
+            List of matching templates.
+        """
+        results = list(self._templates.values())
+
+        if category:
+            results = [t for t in results if t.category == category]
+
+        if tags:
+            results = [
+                t for t in results
+                if all(tag in t.tags for tag in tags)
+            ]
+
+        if search:
+            search_lower = search.lower()
+            results = [
+                t for t in results
+                if search_lower in t.name.lower() or search_lower in t.description.lower()
+            ]
+
+        return results
+
+    def get_all_categories(self) -> List[AgentCategory]:
+        """Get all categories present in the catalog."""
+        categories = set()
+        for template in self._templates.values():
+            categories.add(template.category)
+        return list(categories)
+
+    def get_all_tags(self) -> List[str]:
+        """Get all unique tags present in the catalog."""
+        tags = set()
+        for template in self._templates.values():
+            tags.update(template.tags)
+        return sorted(tags)
+
+    def count(self) -> int:
+        """Return the number of templates in the catalog."""
+        return len(self._templates)
+
+    def to_json(self, indent: int = 2) -> str:
+        """Serialize catalog to JSON string."""
+        return json.dumps(
+            [t.to_dict() for t in self._templates.values()],
+            indent=indent,
+        )
+
+    @classmethod
+    def from_json(cls, json_str: str) -> "TemplateCatalog":
+        """Create catalog from JSON string."""
+        data = json.loads(json_str)
+        templates = [AgentTemplate.from_dict(item) for item in data]
+        return cls(templates)
+
+
+# Built-in official templates
+
+def get_default_catalog() -> TemplateCatalog:
+    """Return the default catalog with official templates."""
+    catalog = TemplateCatalog()
+
+    # Template 1: Code Review Assistant
+    catalog.add_template(AgentTemplate(
+        id="code-review-assistant",
+        name="Code Review Assistant",
+        description="Automated code review agent that analyzes pull requests for bugs, style issues, and security vulnerabilities.",
+        category=AgentCategory.DEVELOPMENT,
+        system_prompt=(
+            "You are an expert code reviewer. Analyze the provided code for:\n"
+            "1. Potential bugs and logic errors\n"
+            "2. Security vulnerabilities\n"
+            "3. Performance issues\n"
+            "4. Code style and best practices\n"
+            "5. Test coverage suggestions\n\n"
+            "Provide constructive feedback with specific line references and code examples."
+        ),
+        model="gpt-4",
+        model_parameters={"temperature": 0.2, "max_tokens": 4096},
+        tools=[
+            ToolAssignment("github_pr_reader", "Read pull request diffs and comments"),
+            ToolAssignment("static_analysis", "Run static analysis tools"),
+            ToolAssignment("code_formatter", "Suggest formatting improvements"),
+        ],
+        mcp_servers=[
+            MCPServerConfig("github-mcp", "https://mcp.github.com/v1", auth_type="oauth"),
+        ],
+        tags=["code-review", "development", "security"],
+        author="Archestra Team",
+    ))
+
+    # Template 2: Data Analyst
+    catalog.add_template(AgentTemplate(
+        id="data-analyst",
+        name="Data Analyst",
+        description="Analyze datasets, generate visualizations, and produce insights from structured and unstructured data.",
+        category=AgentCategory.DATA_SCIENCE,
+        system_prompt=(
+            "You are a senior data analyst. Given a dataset and a question:\n"
+            "1. Clean and preprocess the data\n"
+            "2. Perform exploratory data analysis\n"
+            "3. Generate relevant visualizations\n"
+            "4. Apply statistical tests or ML models as needed\n"
+            "
