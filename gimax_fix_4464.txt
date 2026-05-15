@@ -1,0 +1,251 @@
+```python
+# archestra/models/mixins/soft_delete.py
+"""
+Soft delete mixin for all models.
+Provides a generic way to mark records as deleted instead of hard deleting them.
+"""
+from datetime import datetime, timezone
+from typing import Optional
+from sqlalchemy import Column, DateTime, Boolean, event
+from sqlalchemy.orm import Query, Session
+from archestra.extensions import db
+
+
+class SoftDeleteMixin:
+    """Mixin that adds soft delete capability to SQLAlchemy models."""
+
+    deleted_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    is_deleted = Column(Boolean, default=False, index=True)
+
+    def soft_delete(self) -> None:
+        """Mark the record as deleted."""
+        self.deleted_at = datetime.now(timezone.utc)
+        self.is_deleted = True
+
+    def restore(self) -> None:
+        """Restore a soft-deleted record."""
+        self.deleted_at = None
+        self.is_deleted = False
+
+    @classmethod
+    def query(cls) -> Query:
+        """Override default query to exclude soft-deleted records by default."""
+        return db.session.query(cls).filter(cls.is_deleted == False)
+
+    @classmethod
+    def query_with_deleted(cls) -> Query:
+        """Query including soft-deleted records."""
+        return db.session.query(cls)
+
+    @classmethod
+    def query_deleted_only(cls) -> Query:
+        """Query only soft-deleted records."""
+        return db.session.query(cls).filter(cls.is_deleted == True)
+
+
+# Automatically apply soft delete to all models
+def apply_soft_delete_to_all_models():
+    """
+    Register event listeners to intercept delete operations and convert them to soft deletes.
+    This is the central place where all deletes become soft deletes.
+    """
+    from sqlalchemy.orm import mapper
+    from archestra.models import Base
+
+    for mapper_instance in Base.registry.mappers:
+        model_class = mapper_instance.class_
+        if hasattr(model_class, 'soft_delete') and model_class != SoftDeleteMixin:
+            # Skip models that explicitly opt out (e.g., by setting __soft_delete_disabled__ = True)
+            if getattr(model_class, '__soft_delete_disabled__', False):
+                continue
+
+            @event.listens_for(model_class, 'before_delete', propagate=True)
+            def intercept_delete(mapper, connection, target):
+                """Convert hard delete to soft delete."""
+                if hasattr(target, 'soft_delete') and not target.is_deleted:
+                    target.soft_delete()
+                    # Prevent actual deletion by raising an exception
+                    raise Exception("Soft delete enforced: use soft_delete() method instead of delete().")
+
+
+# archestra/models/base.py (partial)
+from sqlalchemy.ext.declarative import declarative_base
+from archestra.models.mixins.soft_delete import SoftDeleteMixin, apply_soft_delete_to_all_models
+
+Base = declarative_base()
+
+# Apply soft delete mixin to all models
+apply_soft_delete_to_all_models()
+
+
+# archestra/models/user.py (example model)
+from archestra.models.base import Base
+from archestra.models.mixins.soft_delete import SoftDeleteMixin
+from sqlalchemy import Column, Integer, String
+
+class User(Base, SoftDeleteMixin):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    email = Column(String(100), unique=True, nullable=False)
+
+    # Optional: disable soft delete for this model
+    # __soft_delete_disabled__ = True
+
+
+# archestra/api/v1/decorators.py
+from functools import wraps
+from flask import request, jsonify
+from archestra.extensions import db
+
+def soft_delete_api(endpoint_func):
+    """
+    Decorator for API endpoints to handle soft delete.
+    Automatically converts DELETE requests to soft deletes.
+    """
+    @wraps(endpoint_func)
+    def wrapper(*args, **kwargs):
+        if request.method == 'DELETE':
+            # Get the model instance
+            instance = endpoint_func(*args, **kwargs)
+            if instance and hasattr(instance, 'soft_delete'):
+                instance.soft_delete()
+                db.session.commit()
+                return jsonify({'message': 'Resource soft deleted successfully'}), 200
+            return jsonify({'error': 'Resource not found'}), 404
+        return endpoint_func(*args, **kwargs)
+    return wrapper
+
+
+# archestra/api/v1/users.py (example API)
+from flask import Blueprint, request, jsonify
+from archestra.models.user import User
+from archestra.extensions import db
+from archestra.api.v1.decorators import soft_delete_api
+
+users_bp = Blueprint('users', __name__)
+
+@users_bp.route('/users/<int:user_id>', methods=['DELETE'])
+@soft_delete_api
+def delete_user(user_id):
+    """Soft delete a user."""
+    user = User.query.get(user_id)  # Uses soft-delete-aware query
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    return user
+
+@users_bp.route('/users', methods=['GET'])
+def list_users():
+    """List non-deleted users."""
+    users = User.query.all()  # Automatically excludes soft-deleted
+    return jsonify([{'id': u.id, 'name': u.name, 'email': u.email} for u in users])
+
+@users_bp.route('/users/deleted', methods=['GET'])
+def list_deleted_users():
+    """List only soft-deleted users."""
+    users = User.query_deleted_only().all()
+    return jsonify([{'id': u.id, 'name': u.name, 'email': u.email} for u in users])
+
+
+# tests/test_soft_delete.py
+"""
+Tests for soft delete functionality.
+"""
+import pytest
+from datetime import datetime, timezone
+from archestra.models.user import User
+from archestra.extensions import db
+
+def test_soft_delete_marks_record(app):
+    """Test that soft delete sets deleted_at and is_deleted."""
+    with app.app_context():
+        user = User(name='Test User', email='test@example.com')
+        db.session.add(user)
+        db.session.commit()
+
+        user.soft_delete()
+        db.session.commit()
+
+        assert user.is_deleted == True
+        assert user.deleted_at is not None
+        assert isinstance(user.deleted_at, datetime)
+
+def test_soft_delete_excludes_from_default_query(app):
+    """Test that default query excludes soft-deleted records."""
+    with app.app_context():
+        user1 = User(name='User 1', email='user1@example.com')
+        user2 = User(name='User 2', email='user2@example.com')
+        db.session.add_all([user1, user2])
+        db.session.commit()
+
+        user1.soft_delete()
+        db.session.commit()
+
+        all_users = User.query.all()
+        assert len(all_users) == 1
+        assert all_users[0].id == user2.id
+
+def test_soft_delete_restore(app):
+    """Test that restore clears deleted_at and is_deleted."""
+    with app.app_context():
+        user = User(name='Test User', email='test@example.com')
+        db.session.add(user)
+        db.session.commit()
+
+        user.soft_delete()
+        db.session.commit()
+
+        user.restore()
+        db.session.commit()
+
+        assert user.is_deleted == False
+        assert user.deleted_at is None
+
+def test_query_with_deleted_includes_all(app):
+    """Test that query_with_deleted includes soft-deleted records."""
+    with app.app_context():
+        user = User(name='Test User', email='test@example.com')
+        db.session.add(user)
+        db.session.commit()
+
+        user.soft_delete()
+        db.session.commit()
+
+        all_users = User.query_with_deleted().all()
+        assert len(all_users) == 1
+
+def test_query_deleted_only(app):
+    """Test that query_deleted_only returns only soft-deleted records."""
+    with app.app_context():
+        user1 = User(name='User 1', email='user1@example.com')
+        user2 = User(name='User 2', email='user2@example.com')
+        db.session.add_all([user1, user2])
+        db.session.commit()
+
+        user1.soft_delete()
+        db.session.commit()
+
+        deleted_users = User.query_deleted_only().all()
+        assert len(deleted_users) == 1
+        assert deleted_users[0].id == user1.id
+
+def test_soft_delete_api_endpoint(app, client):
+    """Test that DELETE API endpoint performs soft delete."""
+    with app.app_context():
+        user = User(name='API User', email='api@example.com')
+        db.session.add(user)
+        db.session.commit()
+        user_id = user.id
+
+    response = client.delete(f'/users/{user_id}')
+    assert response.status_code == 200
+
+    with app.app_context():
+        deleted_user = User.query_with_deleted().filter_by(id=user_id).first()
+        assert deleted_user.is_deleted == True
+        assert deleted_user.deleted_at is not None
+
+def test_soft_delete_does_not_affect_hard_delete_models(app):
+    """Test that models with __soft_delete_disabled__ are not affected."""
+    # Assuming there's a model with __soft_delete_disabled__ = True
+    # This test verifies that the event
