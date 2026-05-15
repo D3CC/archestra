@@ -1,0 +1,262 @@
+```python
+# archestra/agents/template_catalog.py
+
+"""
+Agent Template Catalog - Quickstart pre-built agent templates.
+
+This module provides a catalog of pre-configured agent templates that users
+can deploy with a single click. Each template includes a system prompt,
+model configuration, tool assignments, and MCP server installation details.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Any
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to be installed with the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    transport: str = "stdio"  # stdio or sse
+
+
+@dataclass
+class ToolAssignment:
+    """A tool assigned to the agent template."""
+    tool_name: str
+    mcp_server: Optional[str] = None  # If None, use built-in tool
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    model_provider: str = "openai"
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    tools: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    category: str = "general"
+    version: str = "1.0.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Create template from dictionary."""
+        tools = [ToolAssignment(**t) if isinstance(t, dict) else t for t in data.get("tools", [])]
+        mcp_servers = [MCPServerConfig(**m) if isinstance(m, dict) else m for m in data.get("mcp_servers", [])]
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data["description"],
+            system_prompt=data["system_prompt"],
+            model=data["model"],
+            model_provider=data.get("model_provider", "openai"),
+            temperature=data.get("temperature", 0.7),
+            max_tokens=data.get("max_tokens", 4096),
+            tools=tools,
+            mcp_servers=mcp_servers,
+            tags=data.get("tags", []),
+            category=data.get("category", "general"),
+            version=data.get("version", "1.0.0"),
+        )
+
+
+class TemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Provides methods to list, search, get, and deploy templates.
+    Templates can be loaded from built-in defaults or from external JSON files.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+        self._load_defaults()
+
+    def _load_defaults(self) -> None:
+        """Load built-in default templates if catalog is empty."""
+        if not self._templates:
+            defaults = self._get_default_templates()
+            for template in defaults:
+                self._templates[template.id] = template
+
+    def _get_default_templates(self) -> List[AgentTemplate]:
+        """Return list of built-in default templates."""
+        return [
+            AgentTemplate(
+                id="customer-support-agent",
+                name="Customer Support Agent",
+                description="A helpful customer support agent with knowledge base and ticket creation tools.",
+                category="customer-support",
+                tags=["support", "customer-service", "ticketing"],
+                system_prompt=(
+                    "You are a friendly and efficient customer support agent. "
+                    "Your goal is to resolve customer issues quickly and accurately. "
+                    "Use the knowledge base to find answers, and create tickets for issues "
+                    "that require escalation. Always be polite and professional."
+                ),
+                model="gpt-4",
+                model_provider="openai",
+                temperature=0.3,
+                tools=[
+                    ToolAssignment(tool_name="knowledge_base_search"),
+                    ToolAssignment(tool_name="create_ticket"),
+                    ToolAssignment(tool_name="get_order_status"),
+                ],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="knowledge-base",
+                        command="npx",
+                        args=["@archestra/mcp-knowledge-base", "--port", "3100"],
+                        transport="stdio",
+                    ),
+                    MCPServerConfig(
+                        name="ticketing",
+                        command="npx",
+                        args=["@archestra/mcp-ticketing", "--port", "3101"],
+                        transport="stdio",
+                    ),
+                ],
+            ),
+            AgentTemplate(
+                id="code-review-agent",
+                name="Code Review Agent",
+                description="An automated code review agent that analyzes pull requests and provides feedback.",
+                category="development",
+                tags=["code-review", "development", "github"],
+                system_prompt=(
+                    "You are an expert code reviewer. Analyze the provided code changes "
+                    "for bugs, security issues, style violations, and performance problems. "
+                    "Provide clear, actionable feedback. Use the GitHub API to post comments "
+                    "directly on the pull request."
+                ),
+                model="gpt-4-turbo",
+                model_provider="openai",
+                temperature=0.2,
+                max_tokens=8192,
+                tools=[
+                    ToolAssignment(tool_name="analyze_code"),
+                    ToolAssignment(tool_name="post_github_comment"),
+                    ToolAssignment(tool_name="check_security"),
+                ],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="github-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-github", "--token", "${GITHUB_TOKEN}"],
+                        transport="stdio",
+                        env={"GITHUB_TOKEN": ""},
+                    ),
+                ],
+            ),
+            AgentTemplate(
+                id="data-analyst-agent",
+                name="Data Analyst Agent",
+                description="A data analysis agent that can query databases, create visualizations, and generate reports.",
+                category="data",
+                tags=["data-analysis", "sql", "visualization", "reporting"],
+                system_prompt=(
+                    "You are a skilled data analyst. You can query databases using SQL, "
+                    "create visualizations with matplotlib, and generate comprehensive reports. "
+                    "Always explain your findings in plain language and provide actionable insights."
+                ),
+                model="gpt-4",
+                model_provider="openai",
+                temperature=0.4,
+                tools=[
+                    ToolAssignment(tool_name="execute_sql"),
+                    ToolAssignment(tool_name="create_chart"),
+                    ToolAssignment(tool_name="generate_report"),
+                ],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="database-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-database", "--connection-string", "${DB_CONNECTION}"],
+                        transport="stdio",
+                        env={"DB_CONNECTION": ""},
+                    ),
+                    MCPServerConfig(
+                        name="visualization-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-visualization", "--port", "3200"],
+                        transport="stdio",
+                    ),
+                ],
+            ),
+        ]
+
+    def list_templates(self, category: Optional[str] = None, tag: Optional[str] = None) -> List[AgentTemplate]:
+        """
+        List all templates, optionally filtered by category or tag.
+
+        Args:
+            category: Filter by category.
+            tag: Filter by tag.
+
+        Returns:
+            List of matching AgentTemplate objects.
+        """
+        templates = list(self._templates.values())
+        if category:
+            templates = [t for t in templates if t.category == category]
+        if tag:
+            templates = [t for t in templates if tag in t.tags]
+        return templates
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """
+        Get a template by its ID.
+
+        Args:
+            template_id: The unique identifier of the template.
+
+        Returns:
+            AgentTemplate if found, None otherwise.
+        """
+        return self._templates.get(template_id)
+
+    def search_templates(self, query: str) -> List[AgentTemplate]:
+        """
+        Search templates by name, description, or tags.
+
+        Args:
+            query: Search string.
+
+        Returns:
+            List of matching AgentTemplate objects.
+        """
+        query_lower = query.lower()
+        results = []
+        for template in self._templates.values():
+            if (query_lower in template.name.lower()
+                    or query_lower in template.description.lower()
+                    or any(query_lower in tag.lower() for tag in template.tags)):
+                results.append(template)
+        return results
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """
+        Add a new template to the catalog.
+
+        Args:
+            template:
