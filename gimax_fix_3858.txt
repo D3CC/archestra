@@ -1,0 +1,263 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+
+import { z } from 'zod';
+import { AgentConfig, AgentTemplate, MCPServerConfig } from '../types/agent';
+import { logger } from '../utils/logger';
+import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * Schema for validating agent template definitions
+ */
+const AgentTemplateSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  category: z.enum(['customer-support', 'data-analysis', 'devops', 'content-creation', 'research', 'custom']),
+  systemPrompt: z.string().min(1).max(4000),
+  model: z.string().min(1),
+  tools: z.array(z.string()).default([]),
+  mcpServers: z.array(z.object({
+    name: z.string().min(1),
+    url: z.string().url(),
+    auth: z.object({
+      type: z.enum(['none', 'api-key', 'oauth2']),
+      config: z.record(z.unknown()).optional(),
+    }).default({ type: 'none' }),
+  })).default([]),
+  metadata: z.object({
+    author: z.string().optional(),
+    version: z.string().optional(),
+    tags: z.array(z.string()).default([]),
+    createdAt: z.string().datetime().optional(),
+    updatedAt: z.string().datetime().optional(),
+  }).default({}),
+});
+
+export type AgentTemplateRecord = z.infer<typeof AgentTemplateSchema>;
+
+/**
+ * Catalog of pre-built agent templates for quickstart deployment
+ */
+export class AgentTemplateCatalog {
+  private templates: Map<string, AgentTemplateRecord> = new Map();
+  private initialized = false;
+
+  constructor() {
+    this.initializeDefaultTemplates();
+  }
+
+  /**
+   * Initialize the catalog with default templates
+   */
+  private initializeDefaultTemplates(): void {
+    const now = new Date().toISOString();
+
+    const defaultTemplates: AgentTemplateRecord[] = [
+      {
+        id: uuidv4(),
+        name: 'Customer Support Agent',
+        description: 'Handles customer inquiries, ticket routing, and FAQ responses',
+        category: 'customer-support',
+        systemPrompt: `You are a helpful customer support agent. Your role is to:
+- Answer customer questions accurately and politely
+- Route complex issues to human agents when needed
+- Maintain a professional and empathetic tone
+- Use available tools to look up information and update tickets`,
+        model: 'gpt-4',
+        tools: ['ticket-system', 'knowledge-base', 'email'],
+        mcpServers: [
+          {
+            name: 'ticket-system',
+            url: 'https://mcp.example.com/tickets',
+            auth: { type: 'api-key', config: { headerName: 'X-API-Key' } },
+          },
+        ],
+        metadata: {
+          author: 'Archestra Team',
+          version: '1.0.0',
+          tags: ['customer-support', 'ticketing', 'faq'],
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      {
+        id: uuidv4(),
+        name: 'Data Analyst Agent',
+        description: 'Analyzes datasets, generates reports, and creates visualizations',
+        category: 'data-analysis',
+        systemPrompt: `You are a data analysis expert. Your responsibilities include:
+- Loading and cleaning datasets
+- Performing statistical analysis
+- Creating clear visualizations
+- Generating comprehensive reports
+- Explaining findings in plain language`,
+        model: 'gpt-4',
+        tools: ['python-executor', 'chart-generator', 'sql-query'],
+        mcpServers: [
+          {
+            name: 'data-warehouse',
+            url: 'https://mcp.example.com/warehouse',
+            auth: { type: 'oauth2', config: { scopes: ['read:data', 'write:reports'] } },
+          },
+        ],
+        metadata: {
+          author: 'Archestra Team',
+          version: '1.0.0',
+          tags: ['data-analysis', 'visualization', 'reporting'],
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      {
+        id: uuidv4(),
+        name: 'DevOps Assistant',
+        description: 'Manages deployments, monitors infrastructure, and handles incidents',
+        category: 'devops',
+        systemPrompt: `You are a DevOps engineer assistant. Your duties include:
+- Monitoring system health and alerts
+- Managing CI/CD pipelines
+- Troubleshooting deployment issues
+- Automating routine operations
+- Following security best practices`,
+        model: 'gpt-4',
+        tools: ['kubectl', 'terraform', 'prometheus', 'pagerduty'],
+        mcpServers: [
+          {
+            name: 'kubernetes-api',
+            url: 'https://mcp.example.com/k8s',
+            auth: { type: 'api-key', config: { headerName: 'Authorization' } },
+          },
+          {
+            name: 'monitoring',
+            url: 'https://mcp.example.com/monitoring',
+            auth: { type: 'none' },
+          },
+        ],
+        metadata: {
+          author: 'Archestra Team',
+          version: '1.0.0',
+          tags: ['devops', 'kubernetes', 'monitoring', 'ci-cd'],
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      {
+        id: uuidv4(),
+        name: 'Content Creator Agent',
+        description: 'Generates blog posts, social media content, and marketing copy',
+        category: 'content-creation',
+        systemPrompt: `You are a creative content writer. Your expertise includes:
+- Writing engaging blog posts and articles
+- Creating social media content
+- Developing marketing copy
+- Maintaining brand voice consistency
+- Optimizing content for SEO`,
+        model: 'gpt-4',
+        tools: ['seo-analyzer', 'grammar-checker', 'image-generator'],
+        mcpServers: [],
+        metadata: {
+          author: 'Archestra Team',
+          version: '1.0.0',
+          tags: ['content', 'writing', 'marketing', 'seo'],
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      {
+        id: uuidv4(),
+        name: 'Research Assistant',
+        description: 'Conducts literature reviews, summarizes papers, and extracts key insights',
+        category: 'research',
+        systemPrompt: `You are a research assistant with expertise in:
+- Searching academic databases
+- Summarizing research papers
+- Extracting key findings
+- Identifying research gaps
+- Formatting citations in various styles`,
+        model: 'gpt-4',
+        tools: ['web-scraper', 'pdf-extractor', 'citation-manager'],
+        mcpServers: [
+          {
+            name: 'academic-search',
+            url: 'https://mcp.example.com/scholar',
+            auth: { type: 'api-key', config: { headerName: 'X-API-Key' } },
+          },
+        ],
+        metadata: {
+          author: 'Archestra Team',
+          version: '1.0.0',
+          tags: ['research', 'academic', 'summarization', 'citations'],
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+    ];
+
+    defaultTemplates.forEach(template => {
+      this.templates.set(template.id, template);
+    });
+
+    this.initialized = true;
+    logger.info(`AgentTemplateCatalog initialized with ${defaultTemplates.length} default templates`);
+  }
+
+  /**
+   * Get all available templates
+   */
+  getAllTemplates(): AgentTemplateRecord[] {
+    return Array.from(this.templates.values());
+  }
+
+  /**
+   * Get templates by category
+   */
+  getTemplatesByCategory(category: string): AgentTemplateRecord[] {
+    return this.getAllTemplates().filter(t => t.category === category);
+  }
+
+  /**
+   * Get a specific template by ID
+   */
+  getTemplateById(id: string): AgentTemplateRecord | undefined {
+    return this.templates.get(id);
+  }
+
+  /**
+   * Add a custom template to the catalog
+   */
+  addTemplate(template: Omit<AgentTemplateRecord, 'id' | 'metadata.createdAt' | 'metadata.updatedAt'>): AgentTemplateRecord {
+    const now = new Date().toISOString();
+    const newTemplate: AgentTemplateRecord = {
+      ...template,
+      id: uuidv4(),
+      metadata: {
+        ...template.metadata,
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+
+    const validationResult = AgentTemplateSchema.safeParse(newTemplate);
+    if (!validationResult.success) {
+      throw new Error(`Invalid template: ${validationResult.error.message}`);
+    }
+
+    this.templates.set(newTemplate.id, newTemplate);
+    logger.info(`Added template: ${newTemplate.name} (${newTemplate.id})`);
+    return newTemplate;
+  }
+
+  /**
+   * Remove a template from the catalog
+   */
+  removeTemplate(id: string): boolean {
+    const removed = this.templates.delete(id);
+    if (removed) {
+      logger.info(`Removed template: ${id}`);
+    }
+    return removed;
+  }
+
+  /**
+   * Convert a template to a fully configured AgentConfig
