@@ -1,0 +1,266 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+
+import { z } from 'zod';
+import { AgentConfig, AgentTemplate } from '../types/agent';
+import { MCPServerDefinition } from '../types/mcp';
+import { logger } from '../utils/logger';
+import { v4 as uuidv4 } from 'uuid';
+
+// --- Zod Schemas for Validation ---
+
+const MCPServerDefinitionSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  description: z.string().optional(),
+  auth: z.object({
+    type: z.enum(['none', 'bearer', 'api-key']),
+    credentials: z.record(z.string()).optional(),
+  }).optional(),
+});
+
+const AgentTemplateSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  systemPrompt: z.string().min(1),
+  model: z.string().min(1),
+  tools: z.array(z.string()).default([]),
+  mcpServers: z.array(MCPServerDefinitionSchema).default([]),
+  metadata: z.record(z.unknown()).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+// --- Types ---
+
+export type AgentTemplateInput = z.input<typeof AgentTemplateSchema>;
+export type AgentTemplateRecord = z.infer<typeof AgentTemplateSchema>;
+
+// --- Catalog Storage Interface ---
+
+export interface ICatalogStorage {
+  getAll(): Promise<AgentTemplateRecord[]>;
+  getById(id: string): Promise<AgentTemplateRecord | null>;
+  create(template: AgentTemplateRecord): Promise<AgentTemplateRecord>;
+  update(id: string, template: Partial<AgentTemplateRecord>): Promise<AgentTemplateRecord>;
+  delete(id: string): Promise<boolean>;
+}
+
+// --- In-Memory Catalog Storage (for quickstart) ---
+
+export class InMemoryCatalogStorage implements ICatalogStorage {
+  private templates: Map<string, AgentTemplateRecord> = new Map();
+
+  constructor(initialTemplates?: AgentTemplateRecord[]) {
+    if (initialTemplates) {
+      initialTemplates.forEach(t => this.templates.set(t.id, t));
+    }
+  }
+
+  async getAll(): Promise<AgentTemplateRecord[]> {
+    return Array.from(this.templates.values());
+  }
+
+  async getById(id: string): Promise<AgentTemplateRecord | null> {
+    return this.templates.get(id) || null;
+  }
+
+  async create(template: AgentTemplateRecord): Promise<AgentTemplateRecord> {
+    if (this.templates.has(template.id)) {
+      throw new Error(`Template with id ${template.id} already exists`);
+    }
+    this.templates.set(template.id, template);
+    return template;
+  }
+
+  async update(id: string, template: Partial<AgentTemplateRecord>): Promise<AgentTemplateRecord> {
+    const existing = this.templates.get(id);
+    if (!existing) {
+      throw new Error(`Template with id ${id} not found`);
+    }
+    const updated = { ...existing, ...template, id, updatedAt: new Date().toISOString() };
+    this.templates.set(id, updated);
+    return updated;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    return this.templates.delete(id);
+  }
+}
+
+// --- Agent Template Catalog Service ---
+
+export class AgentTemplateCatalog {
+  private storage: ICatalogStorage;
+
+  constructor(storage: ICatalogStorage) {
+    this.storage = storage;
+  }
+
+  /**
+   * List all available agent templates.
+   */
+  async listTemplates(): Promise<AgentTemplateRecord[]> {
+    try {
+      const templates = await this.storage.getAll();
+      logger.info(`Retrieved ${templates.length} agent templates`);
+      return templates;
+    } catch (error) {
+      logger.error('Failed to list agent templates', error);
+      throw new Error('Unable to retrieve agent templates');
+    }
+  }
+
+  /**
+   * Get a specific template by ID.
+   */
+  async getTemplate(id: string): Promise<AgentTemplateRecord | null> {
+    if (!id) {
+      throw new Error('Template ID is required');
+    }
+    try {
+      const template = await this.storage.getById(id);
+      if (!template) {
+        logger.warn(`Agent template not found: ${id}`);
+      }
+      return template;
+    } catch (error) {
+      logger.error(`Failed to get agent template ${id}`, error);
+      throw new Error('Unable to retrieve agent template');
+    }
+  }
+
+  /**
+   * Create a new agent template.
+   */
+  async createTemplate(input: AgentTemplateInput): Promise<AgentTemplateRecord> {
+    const validationResult = AgentTemplateSchema.safeParse({
+      ...input,
+      id: input.id || uuidv4(),
+      createdAt: input.createdAt || new Date().toISOString(),
+      updatedAt: input.updatedAt || new Date().toISOString(),
+    });
+
+    if (!validationResult.success) {
+      logger.error('Invalid agent template input', validationResult.error);
+      throw new Error(`Invalid template data: ${validationResult.error.message}`);
+    }
+
+    try {
+      const template = await this.storage.create(validationResult.data);
+      logger.info(`Created agent template: ${template.id}`);
+      return template;
+    } catch (error) {
+      logger.error('Failed to create agent template', error);
+      throw new Error('Unable to create agent template');
+    }
+  }
+
+  /**
+   * Update an existing agent template.
+   */
+  async updateTemplate(id: string, updates: Partial<AgentTemplateInput>): Promise<AgentTemplateRecord> {
+    if (!id) {
+      throw new Error('Template ID is required');
+    }
+
+    // Validate partial updates
+    const partialSchema = AgentTemplateSchema.partial();
+    const validationResult = partialSchema.safeParse(updates);
+    if (!validationResult.success) {
+      logger.error('Invalid agent template update data', validationResult.error);
+      throw new Error(`Invalid update data: ${validationResult.error.message}`);
+    }
+
+    try {
+      const template = await this.storage.update(id, validationResult.data);
+      logger.info(`Updated agent template: ${id}`);
+      return template;
+    } catch (error) {
+      logger.error(`Failed to update agent template ${id}`, error);
+      throw new Error('Unable to update agent template');
+    }
+  }
+
+  /**
+   * Delete an agent template.
+   */
+  async deleteTemplate(id: string): Promise<boolean> {
+    if (!id) {
+      throw new Error('Template ID is required');
+    }
+    try {
+      const deleted = await this.storage.delete(id);
+      if (deleted) {
+        logger.info(`Deleted agent template: ${id}`);
+      } else {
+        logger.warn(`Agent template not found for deletion: ${id}`);
+      }
+      return deleted;
+    } catch (error) {
+      logger.error(`Failed to delete agent template ${id}`, error);
+      throw new Error('Unable to delete agent template');
+    }
+  }
+
+  /**
+   * Apply a template to create a fully configured agent.
+   * This method returns the agent configuration that can be used to spin up an agent.
+   */
+  async applyTemplate(templateId: string): Promise<AgentConfig> {
+    const template = await this.getTemplate(templateId);
+    if (!template) {
+      throw new Error(`Template not found: ${templateId}`);
+    }
+
+    // Convert template to agent configuration
+    const agentConfig: AgentConfig = {
+      systemPrompt: template.systemPrompt,
+      model: template.model,
+      tools: template.tools,
+      mcpServers: template.mcpServers.map(server => ({
+        name: server.name,
+        url: server.url,
+        description: server.description,
+        auth: server.auth,
+      })),
+      metadata: {
+        ...template.metadata,
+        templateId: template.id,
+        templateName: template.name,
+      },
+    };
+
+    logger.info(`Applied agent template ${templateId} to create agent configuration`);
+    return agentConfig;
+  }
+}
+
+// --- Pre-built Quickstart Templates ---
+
+export const QUICKSTART_TEMPLATES: AgentTemplateRecord[] = [
+  {
+    id: 'quickstart-web-researcher',
+    name: 'Web Researcher',
+    description: 'An agent that can search the web and summarize findings using a search MCP server.',
+    systemPrompt: 'You are a helpful research assistant. Use the web search tool to find information and provide concise summaries with citations.',
+    model: 'gpt-4',
+    tools: ['web_search', 'web_fetch'],
+    mcpServers: [
+      {
+        name: 'web-search',
+        url: 'https://mcp.archestra.ai/web-search',
+        description: 'Web search and content fetching',
+        auth: { type: 'api-key', credentials: { apiKey: '${WEB_SEARCH_API_KEY}' } },
+      },
+    ],
+    metadata: { category: 'research', difficulty: 'beginner' },
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'quickstart-code-assistant',
+    name: 'Code Assistant',
+    description: 'An agent that can read, analyze, and generate code using a code execution MCP server.',
+    systemPrompt: 'You are an expert
