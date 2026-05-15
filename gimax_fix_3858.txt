@@ -1,0 +1,222 @@
+```python
+# archestra/agent_templates/catalog.py
+"""
+Quickstart catalog of pre-built agent templates.
+Each template includes system prompt, model config, tool assignments,
+and MCP server definitions for one-click agent setup.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Any
+from enum import Enum
+
+from archestra.agents.base import AgentConfig
+from archestra.tools.registry import ToolAssignment
+from archestra.mcp.server import MCPServerConfig
+
+
+class TemplateCategory(str, Enum):
+    """Categories for organizing agent templates."""
+    CUSTOMER_SUPPORT = "customer_support"
+    CODE_ASSISTANT = "code_assistant"
+    DATA_ANALYST = "data_analyst"
+    RESEARCH = "research"
+    CREATIVE = "creative"
+    PRODUCTIVITY = "productivity"
+
+
+@dataclass
+class AgentTemplate:
+    """
+    A pre-built agent template with all configuration needed to spin up an agent.
+    
+    Attributes:
+        id: Unique identifier for the template.
+        name: Human-readable name.
+        description: Short description of the template's purpose.
+        category: Category for filtering.
+        system_prompt: The system prompt for the agent.
+        model: Model identifier (e.g., "gpt-4", "claude-3-opus").
+        temperature: Sampling temperature.
+        max_tokens: Maximum tokens per response.
+        tool_assignments: List of tool assignments (tool name + config).
+        mcp_servers: List of MCP server configurations to install.
+        tags: Optional tags for search/filter.
+        version: Template version for upgrade tracking.
+    """
+    id: str
+    name: str
+    description: str
+    category: TemplateCategory
+    system_prompt: str
+    model: str = "gpt-4"
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    tool_assignments: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+
+    def to_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig for agent instantiation."""
+        return AgentConfig(
+            system_prompt=self.system_prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tool_assignments=self.tool_assignments,
+            mcp_servers=self.mcp_servers,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary (excluding internal fields)."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize from dictionary."""
+        return cls(**data)
+
+
+# ---------------------------------------------------------------------------
+# Built-in catalog of templates
+# ---------------------------------------------------------------------------
+
+def _get_default_catalog() -> Dict[str, AgentTemplate]:
+    """Return the default set of pre-built agent templates."""
+    return {
+        "customer-support-basic": AgentTemplate(
+            id="customer-support-basic",
+            name="Customer Support Agent",
+            description="Handles common customer inquiries with knowledge base lookup and ticket creation.",
+            category=TemplateCategory.CUSTOMER_SUPPORT,
+            system_prompt=(
+                "You are a helpful customer support agent. Your goal is to resolve user issues "
+                "quickly and accurately. Use the knowledge base tool to find answers, and create "
+                "tickets for issues that require escalation. Always be polite and professional."
+            ),
+            model="gpt-4",
+            temperature=0.3,
+            tool_assignments=[
+                ToolAssignment(tool_name="knowledge_base_search", config={"max_results": 5}),
+                ToolAssignment(tool_name="create_ticket", config={"priority": "normal"}),
+            ],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="support-db",
+                    url="mcp://support.internal:9090",
+                    auth_token_env="SUPPORT_MCP_TOKEN",
+                ),
+            ],
+            tags=["support", "customer-service", "ticketing"],
+        ),
+        "code-assistant-python": AgentTemplate(
+            id="code-assistant-python",
+            name="Python Code Assistant",
+            description="Helps write, review, and debug Python code with access to linters and interpreters.",
+            category=TemplateCategory.CODE_ASSISTANT,
+            system_prompt=(
+                "You are an expert Python developer assistant. Help users write clean, efficient, "
+                "and well-documented Python code. Use the code execution tool to test snippets, "
+                "and the linter tool to check for style issues. Provide explanations for your suggestions."
+            ),
+            model="claude-3-opus",
+            temperature=0.2,
+            max_tokens=4096,
+            tool_assignments=[
+                ToolAssignment(tool_name="python_execute", config={"timeout": 30}),
+                ToolAssignment(tool_name="python_lint", config={"flake8": True}),
+                ToolAssignment(tool_name="file_read", config={}),
+                ToolAssignment(tool_name="file_write", config={}),
+            ],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="code-sandbox",
+                    url="mcp://sandbox.internal:9091",
+                    auth_token_env="SANDBOX_MCP_TOKEN",
+                ),
+            ],
+            tags=["python", "coding", "development", "debugging"],
+        ),
+        "data-analyst-sql": AgentTemplate(
+            id="data-analyst-sql",
+            name="Data Analyst (SQL)",
+            description="Analyze data using SQL queries, generate reports, and visualize results.",
+            category=TemplateCategory.DATA_ANALYST,
+            system_prompt=(
+                "You are a data analyst assistant. Help users query databases, analyze results, "
+                "and create visualizations. Write clear SQL queries and explain your findings. "
+                "Always validate your queries before execution."
+            ),
+            model="gpt-4",
+            temperature=0.1,
+            tool_assignments=[
+                ToolAssignment(tool_name="sql_query", config={"database": "analytics", "timeout": 60}),
+                ToolAssignment(tool_name="chart_generator", config={"type": "auto"}),
+                ToolAssignment(tool_name="export_csv", config={}),
+            ],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="analytics-db",
+                    url="mcp://analytics.internal:9092",
+                    auth_token_env="ANALYTICS_MCP_TOKEN",
+                ),
+            ],
+            tags=["data", "analytics", "sql", "reporting"],
+        ),
+        "research-assistant": AgentTemplate(
+            id="research-assistant",
+            name="Research Assistant",
+            description="Conduct web research, summarize articles, and compile reports.",
+            category=TemplateCategory.RESEARCH,
+            system_prompt=(
+                "You are a research assistant. Help users find information, summarize articles, "
+                "and compile comprehensive reports. Always cite your sources and provide balanced perspectives."
+            ),
+            model="claude-3-sonnet",
+            temperature=0.4,
+            max_tokens=4096,
+            tool_assignments=[
+                ToolAssignment(tool_name="web_search", config={"num_results": 10}),
+                ToolAssignment(tool_name="web_scrape", config={"max_pages": 3}),
+                ToolAssignment(tool_name="summarize", config={"max_length": 500}),
+            ],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="research-index",
+                    url="mcp://research.internal:9093",
+                    auth_token_env="RESEARCH_MCP_TOKEN",
+                ),
+            ],
+            tags=["research", "summarization", "web", "writing"],
+        ),
+        "creative-writer": AgentTemplate(
+            id="creative-writer",
+            name="Creative Writer",
+            description="Generate creative content: stories, poems, marketing copy, and more.",
+            category=TemplateCategory.CREATIVE,
+            system_prompt=(
+                "You are a creative writing assistant. Help users generate stories, poems, "
+                "marketing copy, and other creative content. Be imaginative and adapt to the user's style. "
+                "Offer multiple variations when appropriate."
+            ),
+            model="gpt-4",
+            temperature=0.9,
+            max_tokens=4096,
+            tool_assignments=[
+                ToolAssignment(tool_name="text_generator", config={"style": "creative"}),
+                ToolAssignment(tool_name="grammar_check", config={}),
+                ToolAssignment(tool_name="thesaurus", config={}),
+            ],
+            mcp_servers=[],
+            tags=["creative", "writing", "content", "marketing"],
+        ),
+        "productivity-assistant": AgentTemplate(
+            id="productivity-assistant",
+            name="Productivity Assistant",
+            description="Manage tasks, calendar, emails, and notes to boost productivity.",
+            category=TemplateCategory.PRODUCTIVITY,
+            system_prompt=(
+                "You are a productivity assistant. Help users manage their tasks, schedule events
