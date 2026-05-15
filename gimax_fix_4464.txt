@@ -1,0 +1,274 @@
+```python
+# archestra/models/mixins/soft_delete.py
+"""
+Soft delete mixin for all models.
+Provides a generic way to mark records as deleted instead of hard deleting them.
+"""
+from datetime import datetime, timezone
+from typing import Optional
+from sqlalchemy import Column, DateTime, Boolean, event
+from sqlalchemy.orm import Query, Mapped, declared_attr
+from archestra.db import Base
+
+
+class SoftDeleteMixin:
+    """
+    Mixin that adds soft delete capability to any model.
+    Automatically filters out deleted records in queries.
+    """
+    
+    __soft_delete_enabled__ = True  # Override in subclass to disable for specific models
+    
+    @declared_attr
+    def deleted_at(cls) -> Mapped[Optional[datetime]]:
+        return Column(DateTime(timezone=True), nullable=True, default=None, index=True)
+    
+    @declared_attr
+    def is_deleted(cls) -> Mapped[bool]:
+        return Column(Boolean, default=False, nullable=False, index=True)
+    
+    def soft_delete(self) -> None:
+        """Mark this record as deleted."""
+        self.deleted_at = datetime.now(timezone.utc)
+        self.is_deleted = True
+    
+    def restore(self) -> None:
+        """Restore a soft-deleted record."""
+        self.deleted_at = None
+        self.is_deleted = False
+    
+    @property
+    def is_soft_deleted(self) -> bool:
+        """Check if this record is soft deleted."""
+        return self.is_deleted or self.deleted_at is not None
+
+
+class SoftDeleteQuery(Query):
+    """
+    Custom query class that automatically filters out soft-deleted records.
+    Use `with_deleted()` to include deleted records.
+    """
+    
+    def __new__(cls, *args, **kwargs):
+        obj = super().__new__(cls)
+        obj._with_deleted = False
+        return obj
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._with_deleted = False
+    
+    def with_deleted(self):
+        """Include soft-deleted records in the query."""
+        self._with_deleted = True
+        return self
+    
+    def __iter__(self):
+        return self._apply_soft_delete_filter().__iter__()
+    
+    def all(self):
+        return self._apply_soft_delete_filter().all()
+    
+    def first(self):
+        return self._apply_soft_delete_filter().first()
+    
+    def one(self):
+        return self._apply_soft_delete_filter().one()
+    
+    def one_or_none(self):
+        return self._apply_soft_delete_filter().one_or_none()
+    
+    def count(self):
+        return self._apply_soft_delete_filter().count()
+    
+    def _apply_soft_delete_filter(self):
+        """Apply the soft delete filter unless with_deleted() was called."""
+        if self._with_deleted:
+            return self
+        
+        # Get the primary entity/model class
+        entity = self._primary_entity
+        if entity is None:
+            return self
+        
+        model_class = entity.mapper.class_
+        
+        # Check if the model uses SoftDeleteMixin and has soft delete enabled
+        if hasattr(model_class, '__soft_delete_enabled__') and model_class.__soft_delete_enabled__:
+            if hasattr(model_class, 'is_deleted'):
+                return self.filter(model_class.is_deleted == False)
+        
+        return self
+
+
+# Patch the session to use SoftDeleteQuery
+from sqlalchemy.orm import Session, Query as BaseQuery
+
+original_query = Session.query
+
+def patched_query(self, *entities, **kwargs):
+    """Override Session.query to use SoftDeleteQuery."""
+    query = SoftDeleteQuery(entities, self)
+    return query
+
+Session.query = patched_query
+
+
+# Event listener to automatically soft delete instead of hard delete
+def before_delete_listener(mapper, connection, target):
+    """
+    Automatically convert hard deletes to soft deletes for models with SoftDeleteMixin.
+    """
+    if hasattr(target, '__soft_delete_enabled__') and target.__soft_delete_enabled__:
+        if hasattr(target, 'soft_delete'):
+            target.soft_delete()
+            # Prevent the actual delete from happening
+            raise Exception("Soft delete applied, preventing hard delete")
+
+# Register the listener for all models
+event.listen(Base, 'before_delete', before_delete_listener, propagate=True)
+
+
+# archestra/models/__init__.py (updated)
+"""
+Model imports with soft delete support.
+"""
+from archestra.models.mixins.soft_delete import SoftDeleteMixin, SoftDeleteQuery
+from archestra.models.user import User
+from archestra.models.project import Project
+from archestra.models.task import Task
+# ... other model imports
+
+__all__ = [
+    'SoftDeleteMixin',
+    'SoftDeleteQuery',
+    'User',
+    'Project',
+    'Task',
+    # ... other models
+]
+
+
+# archestra/models/user.py (example model using soft delete)
+"""
+User model with soft delete support.
+"""
+from sqlalchemy import Column, Integer, String, DateTime
+from sqlalchemy.orm import relationship
+from archestra.db import Base
+from archestra.models.mixins.soft_delete import SoftDeleteMixin
+
+
+class User(Base, SoftDeleteMixin):
+    __tablename__ = 'users'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    username = Column(String(100), unique=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), onupdate=datetime.utcnow)
+    
+    # Relationships
+    projects = relationship("Project", back_populates="owner")
+    tasks = relationship("Task", back_populates="assignee")
+    
+    def __repr__(self):
+        return f"<User(id={self.id}, email='{self.email}')>"
+
+
+# archestra/models/project.py (example with soft delete disabled)
+"""
+Project model with soft delete explicitly disabled.
+"""
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy.orm import relationship
+from archestra.db import Base
+from archestra.models.mixins.soft_delete import SoftDeleteMixin
+
+
+class Project(Base, SoftDeleteMixin):
+    __tablename__ = 'projects'
+    __soft_delete_enabled__ = False  # Disable soft delete for this model
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    
+    # Relationships
+    owner = relationship("User", back_populates="projects")
+    tasks = relationship("Task", back_populates="project")
+    
+    def __repr__(self):
+        return f"<Project(id={self.id}, name='{self.name}')>"
+
+
+# tests/test_soft_delete.py
+"""
+Test suite for soft delete functionality.
+"""
+import pytest
+from datetime import datetime, timezone
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from archestra.db import Base
+from archestra.models.mixins.soft_delete import SoftDeleteMixin, SoftDeleteQuery
+from archestra.models.user import User
+from archestra.models.project import Project
+
+
+@pytest.fixture(scope="function")
+def db_session():
+    """Create a fresh in-memory database for each test."""
+    engine = create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    TestingSession = sessionmaker(bind=engine)
+    session = TestingSession()
+    yield session
+    session.close()
+    Base.metadata.drop_all(engine)
+
+
+class TestSoftDeleteMixin:
+    """Test the SoftDeleteMixin functionality."""
+    
+    def test_soft_delete_sets_timestamp(self, db_session: Session):
+        """Test that soft delete sets deleted_at and is_deleted."""
+        user = User(email="test@example.com", username="testuser")
+        db_session.add(user)
+        db_session.commit()
+        
+        user.soft_delete()
+        db_session.commit()
+        
+        assert user.is_deleted is True
+        assert user.deleted_at is not None
+        assert user.deleted_at.tzinfo is not None
+    
+    def test_restore_clears_soft_delete(self, db_session: Session):
+        """Test that restore clears soft delete flags."""
+        user = User(email="test@example.com", username="testuser")
+        db_session.add(user)
+        db_session.commit()
+        
+        user.soft_delete()
+        db_session.commit()
+        
+        user.restore()
+        db_session.commit()
+        
+        assert user.is_deleted is False
+        assert user.deleted_at is None
+    
+    def test_is_soft_deleted_property(self, db_session: Session):
+        """Test the is_soft_deleted property."""
+        user = User(email="test@example.com", username="testuser")
+        db_session.add(user)
+        db_session.commit()
+        
+        assert user.is_soft_deleted is False
+        
+        user.soft_delete()
+        assert user.is_soft_deleted is True
+    
+    def test_soft_delete_disabled_model(self, db_session: Session
