@@ -1,0 +1,275 @@
+```python
+"""
+Agent Template Catalog - Quickstart pre-built agent templates.
+
+This module provides a catalog of pre-built agent templates that allow users
+to quickly spin up fully-configured agents with system prompts, model settings,
+tool assignments, and MCP server installations in a single click.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to be installed with the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    description: str = ""
+
+
+@dataclass
+class ToolAssignment:
+    """Assignment of a tool to an agent template."""
+    tool_name: str
+    mcp_server: Optional[str] = None  # If None, tool is built-in
+    parameters: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    tools: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    category: str = "general"
+    version: str = "1.0.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize template from dictionary."""
+        tools = [ToolAssignment(**t) for t in data.pop("tools", [])]
+        mcp_servers = [MCPServerConfig(**m) for m in data.pop("mcp_servers", [])]
+        return cls(tools=tools, mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Template Catalog
+# ---------------------------------------------------------------------------
+
+class AgentTemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Provides methods to list, get, and install templates. Templates can be
+    loaded from built-in defaults or from external JSON files.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+        self._load_defaults()
+
+    def _load_defaults(self) -> None:
+        """Load built-in default templates."""
+        defaults = _get_default_templates()
+        for template in defaults:
+            if template.id not in self._templates:
+                self._templates[template.id] = template
+
+    def list_templates(
+        self,
+        category: Optional[str] = None,
+        tag: Optional[str] = None,
+    ) -> List[AgentTemplate]:
+        """
+        List available templates, optionally filtered by category or tag.
+
+        Args:
+            category: Filter by category (e.g., "coding", "writing").
+            tag: Filter by tag (e.g., "quickstart", "advanced").
+
+        Returns:
+            List of matching AgentTemplate instances.
+        """
+        result = list(self._templates.values())
+        if category:
+            result = [t for t in result if t.category == category]
+        if tag:
+            result = [t for t in result if tag in t.tags]
+        return result
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """Get a template by its ID."""
+        return self._templates.get(template_id)
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """Add or update a template in the catalog."""
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        """Remove a template by ID. Returns True if removed."""
+        return self._templates.pop(template_id, None) is not None
+
+    def load_from_file(self, filepath: str) -> int:
+        """
+        Load templates from a JSON file.
+
+        Expected format: list of template dicts.
+
+        Args:
+            filepath: Path to JSON file.
+
+        Returns:
+            Number of templates loaded.
+        """
+        path = Path(filepath)
+        if not path.exists():
+            logger.warning(f"Template file not found: {filepath}")
+            return 0
+
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict):
+            data = [data]
+
+        count = 0
+        for item in data:
+            try:
+                template = AgentTemplate.from_dict(item)
+                self.add_template(template)
+                count += 1
+            except Exception as e:
+                logger.error(f"Failed to load template from {filepath}: {e}")
+        return count
+
+    def install_template(
+        self,
+        template_id: str,
+        install_mcp: bool = True,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Simulate or perform installation of a template.
+
+        In a real system, this would create the agent configuration and
+        install MCP servers. Here we return a summary of what would be done.
+
+        Args:
+            template_id: ID of the template to install.
+            install_mcp: Whether to install MCP servers.
+            dry_run: If True, only return the plan without executing.
+
+        Returns:
+            Dictionary with installation plan/result.
+        """
+        template = self.get_template(template_id)
+        if not template:
+            raise ValueError(f"Template '{template_id}' not found.")
+
+        plan = {
+            "template_id": template.id,
+            "template_name": template.name,
+            "model": template.model,
+            "system_prompt_preview": template.system_prompt[:100] + "...",
+            "tools": [t.tool_name for t in template.tools],
+            "mcp_servers": [],
+        }
+
+        if install_mcp:
+            for server in template.mcp_servers:
+                plan["mcp_servers"].append({
+                    "name": server.name,
+                    "command": server.command,
+                    "args": server.args,
+                })
+
+        if dry_run:
+            plan["status"] = "dry_run"
+        else:
+            # In production, this would actually install the agent and MCP servers.
+            logger.info(f"Installing template '{template.name}' with {len(template.tools)} tools "
+                        f"and {len(template.mcp_servers)} MCP servers.")
+            plan["status"] = "installed"
+
+        return plan
+
+
+# ---------------------------------------------------------------------------
+# Default Templates
+# ---------------------------------------------------------------------------
+
+def _get_default_templates() -> List[AgentTemplate]:
+    """Return the built-in default agent templates."""
+    return [
+        AgentTemplate(
+            id="coding-assistant",
+            name="Coding Assistant",
+            description="A general-purpose coding assistant with code generation, "
+                        "review, and debugging capabilities.",
+            system_prompt="You are an expert software engineer. Help the user write, "
+                          "review, and debug code. Provide clear explanations and "
+                          "follow best practices.",
+            model="gpt-4",
+            temperature=0.2,
+            max_tokens=4096,
+            tools=[
+                ToolAssignment(tool_name="code_generator"),
+                ToolAssignment(tool_name="code_reviewer"),
+                ToolAssignment(tool_name="debugger"),
+            ],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="github-mcp",
+                    command="npx",
+                    args=["@modelcontextprotocol/server-github"],
+                    description="GitHub integration for repository operations.",
+                ),
+            ],
+            tags=["quickstart", "coding", "development"],
+            category="coding",
+        ),
+        AgentTemplate(
+            id="writing-assistant",
+            name="Writing Assistant",
+            description="Helps with drafting, editing, and improving written content.",
+            system_prompt="You are a professional writing assistant. Help the user "
+                          "craft clear, engaging, and well-structured content. "
+                          "Provide grammar corrections and style suggestions.",
+            model="gpt-4",
+            temperature=0.7,
+            max_tokens=2048,
+            tools=[
+                ToolAssignment(tool_name="grammar_checker"),
+                ToolAssignment(tool_name="style_advisor"),
+                ToolAssignment(tool_name="content_outliner"),
+            ],
+            mcp_servers=[],
+            tags=["quickstart", "writing", "content"],
+            category="writing",
+        ),
+        AgentTemplate(
+            id="data-analyst",
+            name="Data Analyst",
+            description="Analyzes data, generates reports, and creates visualizations.",
+            system_prompt="You are a data analyst. Help the user explore data, "
+                          "generate insights, and create visualizations. "
+                          "Explain your methodology clearly.",
+            model="gpt-4",
+            temperature=0.3,
+            max_t
