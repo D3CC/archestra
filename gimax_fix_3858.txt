@@ -1,0 +1,265 @@
+```python
+# archestra/agent_templates/catalog.py
+"""
+Agent template catalog for quickstart agent creation.
+Provides pre-built agent templates with system prompts, model configs,
+tool assignments, and MCP server installation in a single click.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from archestra.agents.base import AgentConfig
+from archestra.mcp.server import MCPServerConfig
+from archestra.tools.registry import ToolAssignment
+
+logger = logging.getLogger(__name__)
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+@dataclass
+class AgentTemplate:
+    """Represents a pre-built agent template."""
+
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    tool_assignments: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    category: str = "general"
+
+    def to_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig for agent instantiation."""
+        return AgentConfig(
+            system_prompt=self.system_prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=self.tool_assignments,
+            mcp_servers=self.mcp_servers,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize template from dictionary."""
+        tool_assignments = [
+            ToolAssignment(**ta) if isinstance(ta, dict) else ta
+            for ta in data.pop("tool_assignments", [])
+        ]
+        mcp_servers = [
+            MCPServerConfig(**ms) if isinstance(ms, dict) else ms
+            for ms in data.pop("mcp_servers", [])
+        ]
+        return cls(
+            **data,
+            tool_assignments=tool_assignments,
+            mcp_servers=mcp_servers,
+        )
+
+
+class TemplateCatalog:
+    """Manages the catalog of agent templates."""
+
+    def __init__(self, templates_dir: Optional[Path] = None):
+        self._templates_dir = templates_dir or TEMPLATES_DIR
+        self._templates: Dict[str, AgentTemplate] = {}
+        self._load_templates()
+
+    def _load_templates(self) -> None:
+        """Load all templates from the templates directory."""
+        if not self._templates_dir.exists():
+            logger.warning(f"Templates directory {self._templates_dir} does not exist.")
+            return
+
+        for file_path in self._templates_dir.glob("*.{yaml,yml,json}"):
+            try:
+                with open(file_path, "r") as f:
+                    if file_path.suffix in (".yaml", ".yml"):
+                        data = yaml.safe_load(f)
+                    else:
+                        data = json.load(f)
+
+                if isinstance(data, list):
+                    for item in data:
+                        template = AgentTemplate.from_dict(item)
+                        self._templates[template.id] = template
+                elif isinstance(data, dict):
+                    template = AgentTemplate.from_dict(data)
+                    self._templates[template.id] = template
+                else:
+                    logger.warning(f"Invalid template format in {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to load template {file_path}: {e}")
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """Retrieve a template by its ID."""
+        return self._templates.get(template_id)
+
+    def list_templates(
+        self,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> List[AgentTemplate]:
+        """List templates, optionally filtered by category and/or tags."""
+        templates = list(self._templates.values())
+        if category:
+            templates = [t for t in templates if t.category == category]
+        if tags:
+            templates = [
+                t for t in templates if any(tag in t.tags for tag in tags)
+            ]
+        return templates
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """Add a new template to the catalog (in-memory)."""
+        if template.id in self._templates:
+            logger.warning(f"Template {template.id} already exists, overwriting.")
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        """Remove a template from the catalog."""
+        return self._templates.pop(template_id, None) is not None
+
+    def save_template(self, template: AgentTemplate, file_path: Optional[Path] = None) -> None:
+        """Persist a template to disk as YAML."""
+        if file_path is None:
+            file_path = self._templates_dir / f"{template.id}.yaml"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "w") as f:
+            yaml.dump(template.to_dict(), f, default_flow_style=False)
+        logger.info(f"Saved template {template.id} to {file_path}")
+
+
+# archestra/agent_templates/quickstart.py
+"""
+Quickstart function to spin up a fully-configured agent from a template.
+"""
+
+from typing import Optional
+
+from archestra.agents.base import Agent
+from archestra.mcp.installer import install_mcp_servers
+
+from .catalog import AgentTemplate, TemplateCatalog
+
+
+def create_agent_from_template(
+    template_id: str,
+    catalog: Optional[TemplateCatalog] = None,
+    install_mcp: bool = True,
+) -> Agent:
+    """
+    Create and return a fully-configured agent from a template.
+
+    Args:
+        template_id: The ID of the template to use.
+        catalog: Optional TemplateCatalog instance. Defaults to global catalog.
+        install_mcp: Whether to install the template's MCP servers.
+
+    Returns:
+        An Agent instance configured according to the template.
+
+    Raises:
+        ValueError: If the template ID is not found.
+    """
+    if catalog is None:
+        catalog = TemplateCatalog()
+
+    template = catalog.get_template(template_id)
+    if template is None:
+        raise ValueError(f"Template '{template_id}' not found in catalog.")
+
+    agent_config = template.to_agent_config()
+
+    if install_mcp and template.mcp_servers:
+        install_mcp_servers(template.mcp_servers)
+
+    agent = Agent(config=agent_config)
+    logger.info(f"Created agent '{agent.id}' from template '{template_id}'")
+    return agent
+
+
+# archestra/agent_templates/templates/code_assistant.yaml
+"""
+Example template: Code Assistant
+"""
+# id: code-assistant
+# name: Code Assistant
+# description: An agent specialized in code generation, review, and debugging.
+# category: development
+# tags: [code, programming, debugging]
+# system_prompt: |
+#   You are an expert software engineer assistant. Help users write, review,
+#   and debug code. Provide clear explanations and best practices.
+# model: gpt-4
+# temperature: 0.3
+# max_tokens: 8192
+# tool_assignments:
+#   - tool_id: code_interpreter
+#     enabled: true
+#   - tool_id: file_system
+#     enabled: true
+# mcp_servers:
+#   - name: github-mcp
+#     url: https://mcp.github.com/v1
+#     api_key_env: GITHUB_MCP_API_KEY
+
+
+# tests/test_agent_templates.py
+"""
+Tests for agent template catalog and quickstart functionality.
+"""
+
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+import yaml
+
+from archestra.agent_templates.catalog import AgentTemplate, TemplateCatalog
+from archestra.agent_templates.quickstart import create_agent_from_template
+from archestra.agents.base import AgentConfig
+from archestra.mcp.server import MCPServerConfig
+from archestra.tools.registry import ToolAssignment
+
+
+class TestAgentTemplate:
+    """Tests for AgentTemplate dataclass."""
+
+    def test_to_agent_config(self):
+        template = AgentTemplate(
+            id="test",
+            name="Test Agent",
+            description="A test agent",
+            system_prompt="You are a test assistant.",
+            model="gpt-3.5-turbo",
+            temperature=0.5,
+            max_tokens=2048,
+            tool_assignments=[
+                ToolAssignment(tool_id="search", enabled=True),
+            ],
+            mcp_servers=[
+                MCPServerConfig(name="test-mcp", url="http://localhost:8000"),
+            ],
+        )
+        config = template.to_agent_config()
+        assert isinstance(config, Agent
