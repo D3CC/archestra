@@ -1,0 +1,254 @@
+```python
+# archestra/agents/template_catalog.py
+"""
+Agent template catalog for quick-start agent creation.
+Provides pre-built agent templates with system prompts, model configs,
+tool assignments, and MCP server installation in a single click.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from archestra.agents.base import AgentConfig
+from archestra.mcp.manager import MCPManager
+from archestra.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MCPServerSpec:
+    """Specification for an MCP server to install with the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    description: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MCPServerSpec":
+        return cls(**data)
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template for quick deployment."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerSpec] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "system_prompt": self.system_prompt,
+            "model": self.model,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "tools": self.tools,
+            "mcp_servers": [s.to_dict() for s in self.mcp_servers],
+            "tags": self.tags,
+            "version": self.version,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        mcp_servers = [MCPServerSpec.from_dict(s) for s in data.pop("mcp_servers", [])]
+        return cls(mcp_servers=mcp_servers, **data)
+
+    def create_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig for agent instantiation."""
+        return AgentConfig(
+            system_prompt=self.system_prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=self.tools,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Catalog loader
+# ---------------------------------------------------------------------------
+
+class TemplateCatalog:
+    """
+    Manages a collection of agent templates loaded from YAML/JSON files
+    or a built-in default set.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+
+    # ------------------------------------------------------------------
+    # Built-in defaults
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def with_defaults(cls) -> "TemplateCatalog":
+        """Create catalog with a set of built-in quickstart templates."""
+        defaults = {
+            "code-assistant": AgentTemplate(
+                id="code-assistant",
+                name="Code Assistant",
+                description="Helps write, review, and debug code with file system and git tools.",
+                system_prompt="You are an expert software engineer. Help the user write, review, and debug code. "
+                              "Use the available tools to read/write files, run commands, and interact with git.",
+                model="gpt-4",
+                temperature=0.2,
+                max_tokens=4096,
+                tools=["read_file", "write_file", "run_command", "git_status", "git_diff"],
+                mcp_servers=[
+                    MCPServerSpec(
+                        name="filesystem",
+                        command="npx",
+                        args=["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+                        description="Local filesystem access via MCP.",
+                    ),
+                ],
+                tags=["coding", "development", "git"],
+            ),
+            "data-analyst": AgentTemplate(
+                id="data-analyst",
+                name="Data Analyst",
+                description="Analyze data using Python, SQL, and visualization tools.",
+                system_prompt="You are a data analyst. Help the user explore, clean, and visualize data. "
+                              "Use pandas, matplotlib, and SQL tools to provide insights.",
+                model="gpt-4",
+                temperature=0.3,
+                max_tokens=4096,
+                tools=["python_repl", "sql_query", "read_file", "write_file"],
+                mcp_servers=[
+                    MCPServerSpec(
+                        name="sqlite",
+                        command="uvx",
+                        args=["mcp-server-sqlite", "--db-path", "/workspace/data.db"],
+                        description="SQLite database access via MCP.",
+                    ),
+                ],
+                tags=["data", "analytics", "sql"],
+            ),
+            "research-assistant": AgentTemplate(
+                id="research-assistant",
+                name="Research Assistant",
+                description="Search the web, fetch content, and summarize information.",
+                system_prompt="You are a research assistant. Help the user find, extract, and summarize "
+                              "information from the web. Always cite sources.",
+                model="gpt-4",
+                temperature=0.5,
+                max_tokens=4096,
+                tools=["web_search", "web_fetch", "summarize"],
+                mcp_servers=[
+                    MCPServerSpec(
+                        name="brave-search",
+                        command="npx",
+                        args=["-y", "@anthropic-ai/mcp-server-brave-search"],
+                        description="Web search via Brave Search API.",
+                    ),
+                ],
+                tags=["research", "web", "summarization"],
+            ),
+        }
+        return cls(templates=defaults)
+
+    # ------------------------------------------------------------------
+    # Load / save
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def load_from_file(cls, path: Path) -> "TemplateCatalog":
+        """Load templates from a YAML or JSON file."""
+        if not path.exists():
+            raise FileNotFoundError(f"Template file not found: {path}")
+
+        with open(path, "r") as f:
+            if path.suffix in (".yaml", ".yml"):
+                data = yaml.safe_load(f)
+            elif path.suffix == ".json":
+                data = json.load(f)
+            else:
+                raise ValueError(f"Unsupported file format: {path.suffix}")
+
+        templates = {}
+        for item in data.get("templates", []):
+            template = AgentTemplate.from_dict(item)
+            templates[template.id] = template
+        return cls(templates=templates)
+
+    def save_to_file(self, path: Path) -> None:
+        """Save catalog to a YAML file."""
+        data = {
+            "version": "1.0",
+            "templates": [t.to_dict() for t in self._templates.values()],
+        }
+        with open(path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def get(self, template_id: str) -> Optional[AgentTemplate]:
+        return self._templates.get(template_id)
+
+    def list_templates(self, tag: Optional[str] = None) -> List[AgentTemplate]:
+        if tag:
+            return [t for t in self._templates.values() if tag in t.tags]
+        return list(self._templates.values())
+
+    def add_template(self, template: AgentTemplate) -> None:
+        if template.id in self._templates:
+            logger.warning("Overwriting existing template: %s", template.id)
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        return self._templates.pop(template_id, None) is not None
+
+    # ------------------------------------------------------------------
+    # Deployment
+    # ------------------------------------------------------------------
+
+    def deploy_agent(
+        self,
+        template_id: str,
+        mcp_manager: MCPManager,
+        tool_registry: ToolRegistry,
+        **overrides: Any,
+    ) -> AgentConfig:
+        """
+        Deploy an agent from a template: install MCP servers and return an AgentConfig.
+        """
+        template = self.get(template_id)
+        if not template:
+            raise ValueError(f"Template not found: {template_id}")
+
+        # Install MCP servers
+        for server_spec in template.mcp_servers:
+            logger.info("Installing MCP server: %s", server_spec.name)
+            mcp_manager.install(
+                name=server_spec.name,
+                command=server_spec.command,
+                args=server_spec.args,
+                env=
