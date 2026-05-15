@@ -1,0 +1,245 @@
+```python
+# archestra/agents/template_catalog.py
+"""
+Agent Template Catalog - Quickstart catalog of pre-built agent templates.
+
+This module provides a catalog of pre-configured agent templates that users
+can deploy with a single click. Each template includes system prompt, model
+configuration, tool assignments, and MCP server installation instructions.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from archestra.agents.base import AgentConfig
+from archestra.tools.registry import ToolRegistry
+from archestra.mcp.server import MCPServerConfig
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+class AgentCategory(str, Enum):
+    """Categories for agent templates."""
+    GENERAL = "general"
+    CODING = "coding"
+    DATA_SCIENCE = "data_science"
+    DEVOPS = "devops"
+    WRITING = "writing"
+    CUSTOMER_SUPPORT = "customer_support"
+    RESEARCH = "research"
+
+
+@dataclass
+class MCPServerTemplate:
+    """Template for an MCP server that the agent requires."""
+    name: str
+    description: str
+    install_command: str
+    config: Dict[str, Any] = field(default_factory=dict)
+    version: str = "latest"
+
+    def to_mcp_config(self) -> MCPServerConfig:
+        return MCPServerConfig(
+            name=self.name,
+            command=self.install_command.split()[0],
+            args=self.install_command.split()[1:],
+            env=self.config.get("env", {}),
+        )
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    category: AgentCategory
+    system_prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerTemplate] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+    author: str = "archestra"
+
+    def to_agent_config(self, tool_registry: Optional[ToolRegistry] = None) -> AgentConfig:
+        """Convert this template to a full AgentConfig."""
+        config = AgentConfig(
+            name=self.name,
+            system_prompt=self.system_prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=[],
+            mcp_servers=[s.to_mcp_config() for s in self.mcp_servers],
+        )
+        if tool_registry:
+            for tool_name in self.tools:
+                tool = tool_registry.get(tool_name)
+                if tool:
+                    config.tools.append(tool)
+                else:
+                    logger.warning(f"Tool '{tool_name}' not found in registry, skipping.")
+        return config
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        mcp_servers = [MCPServerTemplate(**s) for s in data.pop("mcp_servers", [])]
+        data["category"] = AgentCategory(data["category"])
+        return cls(mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Built-in Templates
+# ---------------------------------------------------------------------------
+
+BUILTIN_TEMPLATES: List[AgentTemplate] = [
+    AgentTemplate(
+        id="coding-assistant",
+        name="Coding Assistant",
+        description="A general-purpose coding assistant with code generation, review, and debugging capabilities.",
+        category=AgentCategory.CODING,
+        system_prompt="You are an expert software engineer. Help users write, review, and debug code. "
+                      "Provide clear explanations and follow best practices.",
+        model="gpt-4",
+        temperature=0.2,
+        max_tokens=8192,
+        tools=["code_generator", "code_reviewer", "debugger", "file_reader"],
+        mcp_servers=[
+            MCPServerTemplate(
+                name="github-mcp",
+                description="GitHub integration for repository operations",
+                install_command="npx @anthropic/github-mcp-server",
+                config={"env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}},
+            ),
+        ],
+        tags=["coding", "development", "debugging"],
+    ),
+    AgentTemplate(
+        id="data-analyst",
+        name="Data Analyst",
+        description="Analyze data, generate visualizations, and derive insights from datasets.",
+        category=AgentCategory.DATA_SCIENCE,
+        system_prompt="You are a data scientist. Analyze data, create visualizations, and provide actionable insights. "
+                      "Use pandas, matplotlib, and other data tools as needed.",
+        model="gpt-4",
+        temperature=0.3,
+        max_tokens=8192,
+        tools=["data_loader", "visualizer", "statistical_analyzer", "sql_executor"],
+        mcp_servers=[
+            MCPServerTemplate(
+                name="jupyter-mcp",
+                description="Jupyter notebook integration",
+                install_command="pip install jupyter-mcp-server",
+            ),
+        ],
+        tags=["data", "analytics", "visualization"],
+    ),
+    AgentTemplate(
+        id="devops-engineer",
+        name="DevOps Engineer",
+        description="Manage infrastructure, deployments, and CI/CD pipelines.",
+        category=AgentCategory.DEVOPS,
+        system_prompt="You are a DevOps engineer. Help manage cloud infrastructure, automate deployments, "
+                      "and maintain CI/CD pipelines. Use infrastructure-as-code principles.",
+        model="gpt-4",
+        temperature=0.2,
+        max_tokens=8192,
+        tools=["terraform_executor", "kubectl_runner", "docker_manager", "ci_cd_trigger"],
+        mcp_servers=[
+            MCPServerTemplate(
+                name="kubernetes-mcp",
+                description="Kubernetes cluster management",
+                install_command="npx @anthropic/kubernetes-mcp-server",
+            ),
+            MCPServerTemplate(
+                name="aws-mcp",
+                description="AWS cloud operations",
+                install_command="npx @anthropic/aws-mcp-server",
+                config={"env": {"AWS_REGION": "us-east-1"}},
+            ),
+        ],
+        tags=["devops", "infrastructure", "cloud"],
+    ),
+    AgentTemplate(
+        id="customer-support-agent",
+        name="Customer Support Agent",
+        description="Handle customer inquiries, troubleshoot issues, and provide support.",
+        category=AgentCategory.CUSTOMER_SUPPORT,
+        system_prompt="You are a helpful customer support agent. Assist customers with their inquiries, "
+                      "troubleshoot problems, and escalate when necessary. Be polite and professional.",
+        model="gpt-3.5-turbo",
+        temperature=0.5,
+        max_tokens=2048,
+        tools=["ticket_manager", "knowledge_base_search", "sentiment_analyzer"],
+        mcp_servers=[
+            MCPServerTemplate(
+                name="zendesk-mcp",
+                description="Zendesk ticket integration",
+                install_command="npx @anthropic/zendesk-mcp-server",
+            ),
+        ],
+        tags=["support", "customer-service"],
+    ),
+    AgentTemplate(
+        id="research-assistant",
+        name="Research Assistant",
+        description="Conduct research, summarize papers, and gather information from multiple sources.",
+        category=AgentCategory.RESEARCH,
+        system_prompt="You are a research assistant. Help users find, analyze, and synthesize information "
+                      "from academic papers, articles, and other sources. Provide citations and summaries.",
+        model="gpt-4",
+        temperature=0.4,
+        max_tokens=8192,
+        tools=["web_scraper", "paper_fetcher", "summarizer", "citation_manager"],
+        mcp_servers=[
+            MCPServerTemplate(
+                name="arxiv-mcp",
+                description="ArXiv paper search and retrieval",
+                install_command="pip install arxiv-mcp-server",
+            ),
+        ],
+        tags=["research", "academic", "summarization"],
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Template Catalog
+# ---------------------------------------------------------------------------
+
+class TemplateCatalog:
+    """Catalog of agent templates with load/save capabilities."""
+
+    def __init__(self, templates: Optional[List[AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        if templates:
+            for t in templates:
+                self._templates[t.id] = t
+
+    @classmethod
+    def with_builtins(cls) -> "TemplateCatalog":
+        """Create a catalog pre-loaded with built-in templates."""
+        return cls(BUILTIN_TEMPLATES)
+
+    def add(self, template: AgentTemplate) -> None:
+        """Add a template to the catalog."""
+        if template.id in self._templates:
+            logger.warning(f"Overwriting existing template '{template.id}'")
+       
