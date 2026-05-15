@@ -1,0 +1,267 @@
+```python
+"""
+Agent Template Catalog - Quickstart pre-built agent templates.
+
+This module provides a catalog of pre-built agent templates that allow users
+to quickly spin up fully-configured agents with system prompts, model settings,
+tool assignments, and MCP server installations in a single click.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to be installed with an agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    description: str = ""
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    category: str = "general"
+    version: str = "1.0.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize template from dictionary."""
+        mcp_servers = [
+            MCPServerConfig(**srv) if isinstance(srv, dict) else srv
+            for srv in data.pop("mcp_servers", [])
+        ]
+        return cls(mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Catalog Implementation
+# ---------------------------------------------------------------------------
+
+class AgentTemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Provides methods to list, get, install, and manage agent templates.
+    Templates can be loaded from built-in defaults or from external JSON files.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+        self._load_defaults()
+
+    def _load_defaults(self) -> None:
+        """Load built-in default templates if catalog is empty."""
+        if not self._templates:
+            defaults = self._get_default_templates()
+            for tmpl in defaults:
+                self._templates[tmpl.id] = tmpl
+            logger.info(f"Loaded {len(defaults)} default templates into catalog.")
+
+    @staticmethod
+    def _get_default_templates() -> List[AgentTemplate]:
+        """Return a list of built-in default agent templates."""
+        return [
+            AgentTemplate(
+                id="research-assistant",
+                name="Research Assistant",
+                description="A helpful research assistant with web search and summarization tools.",
+                system_prompt="You are a research assistant. Help users find and summarize information.",
+                model="gpt-4o",
+                tools=["web_search", "summarizer"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="web-search",
+                        command="npx",
+                        args=["-y", "@archestra/mcp-web-search"],
+                        description="Web search MCP server"
+                    )
+                ],
+                tags=["research", "productivity"],
+                category="productivity"
+            ),
+            AgentTemplate(
+                id="code-reviewer",
+                name="Code Reviewer",
+                description="An agent that reviews code and suggests improvements.",
+                system_prompt="You are a senior code reviewer. Analyze code for bugs, style issues, and improvements.",
+                model="gpt-4o",
+                tools=["code_analysis", "linter"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="code-analyzer",
+                        command="npx",
+                        args=["-y", "@archestra/mcp-code-analyzer"],
+                        description="Code analysis MCP server"
+                    )
+                ],
+                tags=["development", "code-review"],
+                category="development"
+            ),
+            AgentTemplate(
+                id="data-analyst",
+                name="Data Analyst",
+                description="An agent for data analysis and visualization.",
+                system_prompt="You are a data analyst. Help users analyze data and create visualizations.",
+                model="gpt-4o",
+                tools=["data_query", "chart_generator"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="data-connector",
+                        command="npx",
+                        args=["-y", "@archestra/mcp-data-connector"],
+                        description="Data connector MCP server"
+                    )
+                ],
+                tags=["data", "analytics"],
+                category="analytics"
+            ),
+            AgentTemplate(
+                id="customer-support",
+                name="Customer Support Agent",
+                description="A customer support agent with ticketing and knowledge base tools.",
+                system_prompt="You are a customer support agent. Help resolve user issues and escalate when needed.",
+                model="gpt-4o",
+                tools=["ticketing", "knowledge_base"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="ticketing-system",
+                        command="npx",
+                        args=["-y", "@archestra/mcp-ticketing"],
+                        description="Ticketing system MCP server"
+                    )
+                ],
+                tags=["support", "customer-service"],
+                category="customer-service"
+            ),
+        ]
+
+    def list_templates(self, category: Optional[str] = None, tag: Optional[str] = None) -> List[AgentTemplate]:
+        """
+        List available templates, optionally filtered by category or tag.
+
+        Args:
+            category: Filter by category (e.g., "development", "productivity").
+            tag: Filter by tag (e.g., "research", "data").
+
+        Returns:
+            List of matching AgentTemplate objects.
+        """
+        results = list(self._templates.values())
+        if category:
+            results = [t for t in results if t.category == category]
+        if tag:
+            results = [t for t in results if tag in t.tags]
+        return results
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """Get a template by its ID."""
+        return self._templates.get(template_id)
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """Add a new template to the catalog."""
+        if template.id in self._templates:
+            logger.warning(f"Overwriting existing template: {template.id}")
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        """Remove a template from the catalog. Returns True if removed."""
+        return self._templates.pop(template_id, None) is not None
+
+    def install_template(self, template_id: str) -> Dict[str, Any]:
+        """
+        Simulate installing a template (agent + MCP servers).
+
+        In a real implementation, this would create the agent configuration
+        and install the required MCP servers.
+
+        Args:
+            template_id: The ID of the template to install.
+
+        Returns:
+            A dictionary with installation status and details.
+
+        Raises:
+            ValueError: If template_id is not found.
+        """
+        template = self.get_template(template_id)
+        if not template:
+            raise ValueError(f"Template '{template_id}' not found in catalog.")
+
+        # Simulate installation steps
+        install_log = {
+            "template_id": template.id,
+            "template_name": template.name,
+            "status": "success",
+            "agent_configured": True,
+            "mcp_servers_installed": [],
+            "details": f"Agent '{template.name}' configured with model '{template.model}'."
+        }
+
+        for server in template.mcp_servers:
+            # In production, this would actually run the MCP server installation
+            install_log["mcp_servers_installed"].append({
+                "name": server.name,
+                "command": server.command,
+                "args": server.args,
+                "status": "installed"
+            })
+
+        logger.info(f"Installed template '{template.id}' with {len(template.mcp_servers)} MCP server(s).")
+        return install_log
+
+    def load_from_file(self, filepath: str) -> int:
+        """
+        Load templates from a JSON file.
+
+        Args:
+            filepath: Path to JSON file containing a list of template objects.
+
+        Returns:
+            Number of templates loaded.
+
+        Raises:
+            FileNotFoundError: If file does not exist.
+            json.JSONDecodeError: If file is not valid JSON.
+        """
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"Template file not found: {filepath}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        if not isinstance(data, list):
+            raise ValueError("JSON file must contain a list of template objects.")
+
+        count = 0
+        for item in data:
+            try:
+                template = AgentTemplate.from_dict(item)
+               
