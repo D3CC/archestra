@@ -1,0 +1,242 @@
+```python
+# archestra/agent_templates/catalog.py
+"""
+Agent template catalog module for quickstart agent deployment.
+
+Provides a registry of pre-built agent templates with system prompts, model
+configurations, tool assignments, and MCP server definitions. Users can
+instantiate a fully-configured agent in a single call.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from archestra.agents.base import AgentConfig, BaseAgent
+from archestra.mcp import MCPServerConfig, MCPManager
+from archestra.tools.base import ToolAssignment
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AgentTemplate:
+    """Blueprint for a pre-built agent configuration."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    tool_assignments: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig suitable for agent instantiation."""
+        return AgentConfig(
+            system_prompt=self.system_prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tool_assignments=self.tool_assignments,
+            mcp_servers=self.mcp_servers,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data["description"],
+            system_prompt=data["system_prompt"],
+            model=data["model"],
+            temperature=data.get("temperature", 0.7),
+            max_tokens=data.get("max_tokens", 2048),
+            tool_assignments=[ToolAssignment(**ta) for ta in data.get("tool_assignments", [])],
+            mcp_servers=[MCPServerConfig(**mcp) for mcp in data.get("mcp_servers", [])],
+            tags=data.get("tags", []),
+            metadata=data.get("metadata", {}),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Catalog registry
+# ---------------------------------------------------------------------------
+
+class AgentTemplateCatalog:
+    """
+    Registry of agent templates. Supports loading from built-in definitions,
+    JSON files, or programmatic registration.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+
+    # ---- built-in templates ------------------------------------------------
+
+    @classmethod
+    def with_defaults(cls) -> "AgentTemplateCatalog":
+        """Create catalog with built-in quickstart templates."""
+        catalog = cls()
+        catalog.register(_customer_support_template())
+        catalog.register(_code_review_template())
+        catalog.register(_data_analyst_template())
+        return catalog
+
+    # ---- registration ------------------------------------------------------
+
+    def register(self, template: AgentTemplate) -> None:
+        """Register a template. Overwrites if id already exists."""
+        if template.id in self._templates:
+            logger.warning("Overwriting existing template '%s'", template.id)
+        self._templates[template.id] = template
+
+    def unregister(self, template_id: str) -> None:
+        """Remove a template by id."""
+        self._templates.pop(template_id, None)
+
+    # ---- query -------------------------------------------------------------
+
+    def get(self, template_id: str) -> Optional[AgentTemplate]:
+        """Retrieve a template by id."""
+        return self._templates.get(template_id)
+
+    def list(self, tag: Optional[str] = None) -> List[AgentTemplate]:
+        """List all templates, optionally filtered by tag."""
+        if tag is None:
+            return list(self._templates.values())
+        return [t for t in self._templates.values() if tag in t.tags]
+
+    def search(self, query: str) -> List[AgentTemplate]:
+        """Simple case-insensitive search over name and description."""
+        q = query.lower()
+        return [
+            t
+            for t in self._templates.values()
+            if q in t.name.lower() or q in t.description.lower()
+        ]
+
+    # ---- persistence -------------------------------------------------------
+
+    def save(self, path: Path) -> None:
+        """Serialize catalog to a JSON file."""
+        data = {tid: t.to_dict() for tid, t in self._templates.items()}
+        path.write_text(json.dumps(data, indent=2, default=str))
+        logger.info("Saved %d templates to %s", len(data), path)
+
+    @classmethod
+    def load(cls, path: Path) -> "AgentTemplateCatalog":
+        """Load catalog from a JSON file."""
+        data = json.loads(path.read_text())
+        templates = {tid: AgentTemplate.from_dict(td) for tid, td in data.items()}
+        logger.info("Loaded %d templates from %s", len(templates), path)
+        return cls(templates)
+
+    # ---- instantiation -----------------------------------------------------
+
+    def instantiate(
+        self,
+        template_id: str,
+        overrides: Optional[Dict[str, Any]] = None,
+        mcp_manager: Optional[MCPManager] = None,
+    ) -> BaseAgent:
+        """
+        Create a fully-configured agent from a template.
+
+        Args:
+            template_id: Identifier of the template to use.
+            overrides: Optional overrides for AgentConfig fields.
+            mcp_manager: If provided, install MCP servers defined in the template.
+
+        Returns:
+            A ready-to-use BaseAgent instance.
+        """
+        template = self.get(template_id)
+        if template is None:
+            raise ValueError(f"Template '{template_id}' not found in catalog.")
+
+        config = template.to_agent_config()
+
+        # Apply overrides
+        if overrides:
+            for key, value in overrides.items():
+                if hasattr(config, key):
+                    setattr(config, key, value)
+                else:
+                    logger.warning("Ignoring unknown override key '%s'", key)
+
+        # Install MCP servers if manager is provided
+        if mcp_manager is not None and template.mcp_servers:
+            for mcp_cfg in template.mcp_servers:
+                mcp_manager.install(mcp_cfg)
+                logger.info("Installed MCP server '%s' for template '%s'", mcp_cfg.name, template_id)
+
+        agent = BaseAgent(config=config)
+        logger.info("Instantiated agent from template '%s' (id=%s)", template.name, template_id)
+        return agent
+
+
+# ---------------------------------------------------------------------------
+# Built-in template definitions
+# ---------------------------------------------------------------------------
+
+def _customer_support_template() -> AgentTemplate:
+    return AgentTemplate(
+        id="customer-support-v1",
+        name="Customer Support Agent",
+        description="Handles common customer inquiries, ticket creation, and FAQ responses.",
+        system_prompt=(
+            "You are a helpful customer support agent. Answer questions politely and "
+            "accurately. If you cannot resolve an issue, escalate to a human agent. "
+            "Use the available tools to look up knowledge base articles and create tickets."
+        ),
+        model="gpt-4o",
+        temperature=0.3,
+        max_tokens=1024,
+        tool_assignments=[
+            ToolAssignment(tool_name="knowledge_base_search", parameters={}),
+            ToolAssignment(tool_name="ticket_creator", parameters={"priority": "normal"}),
+        ],
+        mcp_servers=[
+            MCPServerConfig(name="support-db", url="mcp://support.internal/db", version="1.0.0"),
+        ],
+        tags=["customer-support", "quickstart"],
+        metadata={"author": "archestra-ai", "version": "1.0.0"},
+    )
+
+
+def _code_review_template() -> AgentTemplate:
+    return AgentTemplate(
+        id="code-review-v1",
+        name="Code Review Assistant",
+        description="Reviews pull requests for style, bugs, and security issues.",
+        system_prompt=(
+            "You are an expert code reviewer. Analyze the provided code diff and comment on "
+            "code quality, potential bugs, security vulnerabilities, and adherence to best "
+            "practices. Provide actionable suggestions."
+        ),
+        model="gpt-4o",
+        temperature=0.2,
+        max_tokens=4096,
+        tool_assignments=[
+            ToolAssignment(tool_name="static_analysis", parameters={"severity": "all"}),
+            ToolAssignment(tool_name="dependency_check", parameters={}),
+        ],
+        mcp_servers=[
+            MCPServerConfig(name="repo-scanner", url="mcp://code.internal/scanner", version="2.1.0"),
+        ],
+        tags=["developer", "code-review", "quickstart"],
+        metadata={"author": "archestra-ai", "version
