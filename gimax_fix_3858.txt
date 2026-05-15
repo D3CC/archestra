@@ -1,0 +1,269 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+import { z } from 'zod';
+import { AgentTemplate, AgentTemplateSchema } from './types';
+import { MCPClient } from '../mcp/client';
+import { Logger } from '../utils/logger';
+
+const logger = new Logger('AgentTemplateCatalog');
+
+/**
+ * Pre-built agent templates for quickstart.
+ * Each template includes system prompt, model config, tool assignments, and MCP server definitions.
+ */
+const BUILTIN_TEMPLATES: AgentTemplate[] = [
+  {
+    id: 'code-reviewer',
+    name: 'Code Reviewer',
+    description: 'Reviews pull requests for code quality, security, and best practices.',
+    systemPrompt: `You are an expert code reviewer. Analyze the provided code diff and:
+- Identify potential bugs, security vulnerabilities, and performance issues
+- Suggest improvements following language-specific best practices
+- Check for proper error handling and edge cases
+- Verify adherence to project coding standards
+Provide clear, actionable feedback with code examples.`,
+    model: {
+      provider: 'openai',
+      modelName: 'gpt-4-turbo',
+      temperature: 0.3,
+      maxTokens: 4096,
+    },
+    tools: [
+      {
+        name: 'fetch_code_diff',
+        description: 'Fetches the code diff for a given pull request',
+        parameters: z.object({
+          repo: z.string(),
+          prNumber: z.number(),
+        }),
+      },
+      {
+        name: 'analyze_security',
+        description: 'Runs static security analysis on code',
+        parameters: z.object({
+          code: z.string(),
+          language: z.string(),
+        }),
+      },
+    ],
+    mcpServers: [
+      {
+        name: 'github-mcp',
+        url: 'https://mcp.github.com/v1',
+        auth: { type: 'oauth2', clientId: process.env.GITHUB_MCP_CLIENT_ID || '' },
+      },
+      {
+        name: 'codeql-mcp',
+        url: 'https://mcp.codeql.com/v1',
+        auth: { type: 'apiKey', apiKey: process.env.CODEQL_MCP_API_KEY || '' },
+      },
+    ],
+    category: 'development',
+    tags: ['code-review', 'security', 'best-practices'],
+  },
+  {
+    id: 'customer-support',
+    name: 'Customer Support Agent',
+    description: 'Handles customer inquiries, ticket triage, and knowledge base search.',
+    systemPrompt: `You are a helpful customer support agent. Your responsibilities:
+- Greet customers warmly and identify their needs
+- Search knowledge base for relevant solutions
+- Escalate complex issues to human agents with proper context
+- Maintain a professional and empathetic tone
+- Log all interactions for quality assurance`,
+    model: {
+      provider: 'openai',
+      modelName: 'gpt-3.5-turbo',
+      temperature: 0.7,
+      maxTokens: 2048,
+    },
+    tools: [
+      {
+        name: 'search_knowledge_base',
+        description: 'Searches the knowledge base for articles matching the query',
+        parameters: z.object({
+          query: z.string(),
+          maxResults: z.number().optional().default(5),
+        }),
+      },
+      {
+        name: 'create_ticket',
+        description: 'Creates a support ticket in the CRM',
+        parameters: z.object({
+          customerEmail: z.string().email(),
+          subject: z.string(),
+          description: z.string(),
+          priority: z.enum(['low', 'medium', 'high']),
+        }),
+      },
+      {
+        name: 'escalate_to_human',
+        description: 'Escalates the conversation to a human agent',
+        parameters: z.object({
+          reason: z.string(),
+          context: z.string(),
+        }),
+      },
+    ],
+    mcpServers: [
+      {
+        name: 'zendesk-mcp',
+        url: 'https://mcp.zendesk.com/v1',
+        auth: { type: 'oauth2', clientId: process.env.ZENDESK_MCP_CLIENT_ID || '' },
+      },
+    ],
+    category: 'customer-service',
+    tags: ['support', 'ticketing', 'knowledge-base'],
+  },
+  {
+    id: 'data-analyst',
+    name: 'Data Analyst',
+    description: 'Analyzes datasets, generates reports, and creates visualizations.',
+    systemPrompt: `You are a data analyst assistant. Your capabilities:
+- Load and inspect datasets (CSV, JSON, SQL)
+- Perform statistical analysis and data cleaning
+- Generate insightful visualizations using matplotlib/plotly
+- Create comprehensive reports with findings and recommendations
+- Explain technical concepts to non-technical stakeholders`,
+    model: {
+      provider: 'anthropic',
+      modelName: 'claude-3-opus-20240229',
+      temperature: 0.2,
+      maxTokens: 8192,
+    },
+    tools: [
+      {
+        name: 'load_dataset',
+        description: 'Loads a dataset from a file path or URL',
+        parameters: z.object({
+          source: z.string(),
+          format: z.enum(['csv', 'json', 'parquet']),
+        }),
+      },
+      {
+        name: 'run_sql_query',
+        description: 'Executes a SQL query against the connected database',
+        parameters: z.object({
+          query: z.string(),
+          database: z.string().optional(),
+        }),
+      },
+      {
+        name: 'generate_chart',
+        description: 'Generates a chart from data and returns the image',
+        parameters: z.object({
+          chartType: z.enum(['bar', 'line', 'scatter', 'pie', 'histogram']),
+          data: z.any(),
+          title: z.string().optional(),
+        }),
+      },
+    ],
+    mcpServers: [
+      {
+        name: 'jupyter-mcp',
+        url: 'https://mcp.jupyter.org/v1',
+        auth: { type: 'none' },
+      },
+      {
+        name: 'sql-mcp',
+        url: 'https://mcp.sql.com/v1',
+        auth: { type: 'apiKey', apiKey: process.env.SQL_MCP_API_KEY || '' },
+      },
+    ],
+    category: 'data-science',
+    tags: ['analytics', 'visualization', 'reporting'],
+  },
+];
+
+/**
+ * Catalog of agent templates for quickstart deployment.
+ */
+export class AgentTemplateCatalog {
+  private templates: Map<string, AgentTemplate> = new Map();
+  private mcpClient: MCPClient;
+
+  constructor(mcpClient: MCPClient) {
+    this.mcpClient = mcpClient;
+    this.loadBuiltinTemplates();
+  }
+
+  private loadBuiltinTemplates(): void {
+    for (const template of BUILTIN_TEMPLATES) {
+      const parsed = AgentTemplateSchema.safeParse(template);
+      if (parsed.success) {
+        this.templates.set(parsed.data.id, parsed.data);
+      } else {
+        logger.warn(`Failed to parse builtin template ${template.id}: ${parsed.error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Returns all available templates, optionally filtered by category.
+   */
+  listTemplates(category?: string): AgentTemplate[] {
+    const all = Array.from(this.templates.values());
+    if (category) {
+      return all.filter(t => t.category === category);
+    }
+    return all;
+  }
+
+  /**
+   * Retrieves a template by its unique ID.
+   */
+  getTemplate(id: string): AgentTemplate | undefined {
+    return this.templates.get(id);
+  }
+
+  /**
+   * Registers a custom template at runtime.
+   */
+  registerTemplate(template: AgentTemplate): void {
+    const parsed = AgentTemplateSchema.safeParse(template);
+    if (!parsed.success) {
+      throw new Error(`Invalid template: ${parsed.error.message}`);
+    }
+    if (this.templates.has(parsed.data.id)) {
+      logger.warn(`Overwriting existing template: ${parsed.data.id}`);
+    }
+    this.templates.set(parsed.data.id, parsed.data);
+    logger.info(`Registered template: ${parsed.data.id}`);
+  }
+
+  /**
+   * Deploys an agent from a template: installs MCP servers and returns the agent configuration.
+   */
+  async deployTemplate(id: string): Promise<{ agentConfig: Record<string, unknown>; mcpStatus: string[] }> {
+    const template = this.templates.get(id);
+    if (!template) {
+      throw new Error(`Template not found: ${id}`);
+    }
+
+    const mcpStatus: string[] = [];
+    for (const server of template.mcpServers) {
+      try {
+        await this.mcpClient.installServer(server);
+        mcpStatus.push(`Installed ${server.name}`);
+      } catch (error) {
+        const msg = `Failed to install ${server.name}: ${(error as Error).message}`;
+        logger.error(msg);
+        mcpStatus.push(msg);
+      }
+    }
+
+    const agentConfig = {
+      systemPrompt: template.systemPrompt,
+      model: template.model,
+      tools: template.tools.map(t => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      })),
+      templateId: template.id,
+    };
+
+    return { agentConfig, mcpStatus };
+  }
+
+  /**
