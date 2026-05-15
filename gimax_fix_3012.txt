@@ -1,0 +1,298 @@
+```typescript
+// src/lib/stores/chat-store.ts
+import { writable, derived, get } from 'svelte/store';
+import { v4 as uuidv4 } from 'uuid';
+import type { Message, ChatState, ChatSession } from '$lib/types/chat';
+
+// Constants for deduplication and state management
+const MAX_RETRY_ATTEMPTS = 3;
+const STORAGE_KEY = 'archestra-chat-sessions';
+const PENDING_MESSAGES_KEY = 'archestra-pending-messages';
+
+interface PendingMessage {
+  id: string;
+  sessionId: string;
+  content: string;
+  role: 'user' | 'assistant';
+  timestamp: number;
+  retryCount: number;
+}
+
+// Initialize stores with persistence
+function createChatStore() {
+  const { subscribe, set, update } = writable<ChatState>({
+    sessions: [],
+    currentSessionId: null,
+    isLoading: false,
+    error: null,
+    pendingMessages: []
+  });
+
+  // Load persisted state on initialization
+  function loadPersistedState(): Partial<ChatState> {
+    try {
+      const sessions = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      const pendingMessages = JSON.parse(localStorage.getItem(PENDING_MESSAGES_KEY) || '[]');
+      return { sessions, pendingMessages };
+    } catch {
+      return { sessions: [], pendingMessages: [] };
+    }
+  }
+
+  // Persist state to localStorage
+  function persistState(state: ChatState) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.sessions));
+      localStorage.setItem(PENDING_MESSAGES_KEY, JSON.stringify(state.pendingMessages));
+    } catch (e) {
+      console.error('Failed to persist chat state:', e);
+    }
+  }
+
+  // Initialize with persisted data
+  const initialPersisted = loadPersistedState();
+  set({
+    sessions: initialPersisted.sessions || [],
+    currentSessionId: null,
+    isLoading: false,
+    error: null,
+    pendingMessages: initialPersisted.pendingMessages || []
+  });
+
+  return {
+    subscribe,
+    
+    // Create a new chat session
+    createSession: () => {
+      update(state => {
+        const newSession: ChatSession = {
+          id: uuidv4(),
+          title: 'New Chat',
+          messages: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          status: 'idle'
+        };
+        
+        const newState = {
+          ...state,
+          sessions: [...state.sessions, newSession],
+          currentSessionId: newSession.id
+        };
+        
+        persistState(newState);
+        return newState;
+      });
+    },
+
+    // Switch to an existing session
+    switchSession: (sessionId: string) => {
+      update(state => {
+        const newState = { ...state, currentSessionId: sessionId };
+        persistState(newState);
+        return newState;
+      });
+    },
+
+    // Add a message with deduplication
+    addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => {
+      update(state => {
+        const session = state.sessions.find(s => s.id === state.currentSessionId);
+        if (!session) return state;
+
+        // Check for duplicate messages within the last 2 seconds
+        const isDuplicate = session.messages.some(
+          m => m.content === message.content && 
+               m.role === message.role &&
+               Date.now() - m.timestamp < 2000
+        );
+
+        if (isDuplicate) {
+          console.warn('Duplicate message detected, skipping:', message.content.substring(0, 50));
+          return state;
+        }
+
+        const newMessage: Message = {
+          ...message,
+          id: uuidv4(),
+          timestamp: Date.now()
+        };
+
+        const updatedSession = {
+          ...session,
+          messages: [...session.messages, newMessage],
+          updatedAt: Date.now()
+        };
+
+        const newState = {
+          ...state,
+          sessions: state.sessions.map(s => 
+            s.id === updatedSession.id ? updatedSession : s
+          )
+        };
+
+        persistState(newState);
+        return newState;
+      });
+    },
+
+    // Add a pending message (for messages being processed by LLM)
+    addPendingMessage: (content: string, role: 'user' | 'assistant' = 'user') => {
+      update(state => {
+        const pendingMessage: PendingMessage = {
+          id: uuidv4(),
+          sessionId: state.currentSessionId!,
+          content,
+          role,
+          timestamp: Date.now(),
+          retryCount: 0
+        };
+
+        const newState = {
+          ...state,
+          pendingMessages: [...state.pendingMessages, pendingMessage]
+        };
+
+        persistState(newState);
+        return newState;
+      });
+    },
+
+    // Confirm a pending message (move from pending to confirmed)
+    confirmPendingMessage: (pendingId: string, confirmedMessage?: Partial<Message>) => {
+      update(state => {
+        const pendingIndex = state.pendingMessages.findIndex(p => p.id === pendingId);
+        if (pendingIndex === -1) return state;
+
+        const pending = state.pendingMessages[pendingIndex];
+        const session = state.sessions.find(s => s.id === pending.sessionId);
+        if (!session) return state;
+
+        // Check for duplicates before confirming
+        const isDuplicate = session.messages.some(
+          m => m.content === pending.content && 
+               m.role === pending.role &&
+               Date.now() - m.timestamp < 2000
+        );
+
+        if (isDuplicate) {
+          // Remove the pending message without adding it
+          const newPending = [...state.pendingMessages];
+          newPending.splice(pendingIndex, 1);
+          const newState = { ...state, pendingMessages: newPending };
+          persistState(newState);
+          return newState;
+        }
+
+        const newMessage: Message = {
+          id: pending.id,
+          sessionId: pending.sessionId,
+          content: confirmedMessage?.content || pending.content,
+          role: confirmedMessage?.role || pending.role,
+          timestamp: Date.now(),
+          ...confirmedMessage
+        };
+
+        const updatedSession = {
+          ...session,
+          messages: [...session.messages, newMessage],
+          updatedAt: Date.now()
+        };
+
+        const newPending = [...state.pendingMessages];
+        newPending.splice(pendingIndex, 1);
+
+        const newState = {
+          ...state,
+          sessions: state.sessions.map(s => 
+            s.id === updatedSession.id ? updatedSession : s
+          ),
+          pendingMessages: newPending
+        };
+
+        persistState(newState);
+        return newState;
+      });
+    },
+
+    // Retry a failed pending message
+    retryPendingMessage: (pendingId: string) => {
+      update(state => {
+        const pendingIndex = state.pendingMessages.findIndex(p => p.id === pendingId);
+        if (pendingIndex === -1) return state;
+
+        const pending = state.pendingMessages[pendingIndex];
+        if (pending.retryCount >= MAX_RETRY_ATTEMPTS) {
+          // Remove the pending message after max retries
+          const newPending = [...state.pendingMessages];
+          newPending.splice(pendingIndex, 1);
+          const newState = { ...state, pendingMessages: newPending };
+          persistState(newState);
+          return newState;
+        }
+
+        // Increment retry count
+        const updatedPending = {
+          ...pending,
+          retryCount: pending.retryCount + 1,
+          timestamp: Date.now()
+        };
+
+        const newPending = [...state.pendingMessages];
+        newPending[pendingIndex] = updatedPending;
+
+        const newState = { ...state, pendingMessages: newPending };
+        persistState(newState);
+        return newState;
+      });
+    },
+
+    // Clear all pending messages for the current session
+    clearPendingMessages: () => {
+      update(state => {
+        const newState = {
+          ...state,
+          pendingMessages: state.pendingMessages.filter(
+            p => p.sessionId !== state.currentSessionId
+          )
+        };
+        persistState(newState);
+        return newState;
+      });
+    },
+
+    // Recover messages after reload (check for pending messages that weren't confirmed)
+    recoverPendingMessages: () => {
+      update(state => {
+        const currentSession = state.sessions.find(s => s.id === state.currentSessionId);
+        if (!currentSession) return state;
+
+        const sessionPendingMessages = state.pendingMessages.filter(
+          p => p.sessionId === state.currentSessionId
+        );
+
+        // Add any pending messages that aren't already in the session
+        const messagesToAdd = sessionPendingMessages.filter(
+          pending => !currentSession.messages.some(m => m.id === pending.id)
+        );
+
+        if (messagesToAdd.length === 0) return state;
+
+        const newMessages = messagesToAdd.map(pending => ({
+          id: pending.id,
+          sessionId: pending.sessionId,
+          content: pending.content,
+          role: pending.role,
+          timestamp: pending.timestamp
+        }));
+
+        const updatedSession = {
+          ...currentSession,
+          messages: [...currentSession.messages, ...newMessages],
+          updatedAt: Date.now()
+        };
+
+        const newState = {
+          ...state,
+          sessions: state.sessions.map(s => 
+            s.id === updatedSession.id ? updatedSession
