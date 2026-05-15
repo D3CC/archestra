@@ -1,0 +1,255 @@
+```python
+# archestra/agent_templates/catalog.py
+"""
+Agent template catalog module for quickstart deployment of pre-built agents.
+Provides a registry of agent templates with system prompts, model configs,
+tool assignments, and MCP server installation support.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from archestra.core.agent import AgentConfig
+from archestra.core.tools import ToolAssignment
+from archestra.mcp.server import MCPServerConfig, install_mcp_server
+
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Data Models
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class AgentTemplate:
+    """Represents a pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    tools: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig for instantiation."""
+        return AgentConfig(
+            name=self.name,
+            system_prompt=self.system_prompt,
+            model=self.model,
+            tools=self.tools,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize dictionary to AgentTemplate."""
+        tools = [ToolAssignment(**t) if isinstance(t, dict) else t for t in data.get("tools", [])]
+        mcp_servers = [
+            MCPServerConfig(**s) if isinstance(s, dict) else s
+            for s in data.get("mcp_servers", [])
+        ]
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            description=data.get("description", ""),
+            system_prompt=data["system_prompt"],
+            model=data["model"],
+            tools=tools,
+            mcp_servers=mcp_servers,
+            tags=data.get("tags", []),
+            version=data.get("version", "1.0.0"),
+            metadata=data.get("metadata", {}),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Catalog Registry
+# --------------------------------------------------------------------------- #
+
+class AgentTemplateCatalog:
+    """
+    Registry of agent templates. Supports loading from YAML/JSON files,
+    searching by tags, and deploying templates with MCP server installation.
+    """
+
+    def __init__(self, templates: Optional[List[AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        if templates:
+            for tmpl in templates:
+                self.register(tmpl)
+
+    def register(self, template: AgentTemplate) -> None:
+        """Register a template in the catalog."""
+        if template.id in self._templates:
+            logger.warning("Overwriting existing template: %s", template.id)
+        self._templates[template.id] = template
+
+    def get(self, template_id: str) -> Optional[AgentTemplate]:
+        """Retrieve a template by ID."""
+        return self._templates.get(template_id)
+
+    def list_templates(self) -> List[AgentTemplate]:
+        """Return all registered templates."""
+        return list(self._templates.values())
+
+    def search_by_tag(self, tag: str) -> List[AgentTemplate]:
+        """Find templates that contain a specific tag."""
+        return [t for t in self._templates.values() if tag in t.tags]
+
+    def load_from_file(self, path: str) -> None:
+        """Load templates from a YAML or JSON file."""
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"Template file not found: {path}")
+
+        with open(p, "r") as f:
+            if p.suffix in (".yaml", ".yml"):
+                data = yaml.safe_load(f)
+            elif p.suffix == ".json":
+                data = json.load(f)
+            else:
+                raise ValueError(f"Unsupported file format: {p.suffix}")
+
+        templates_data = data if isinstance(data, list) else data.get("templates", [])
+        for item in templates_data:
+            template = AgentTemplate.from_dict(item)
+            self.register(template)
+
+    def deploy_template(
+        self,
+        template_id: str,
+        install_mcp: bool = True,
+        **kwargs: Any,
+    ) -> AgentConfig:
+        """
+        Deploy a template: return an AgentConfig and optionally install MCP servers.
+        Extra kwargs override template fields (e.g., model, system_prompt).
+        """
+        template = self.get(template_id)
+        if template is None:
+            raise ValueError(f"Template not found: {template_id}")
+
+        # Apply overrides
+        overridden = template.to_dict()
+        overridden.update(kwargs)
+        final_template = AgentTemplate.from_dict(overridden)
+
+        if install_mcp:
+            for mcp_config in final_template.mcp_servers:
+                logger.info("Installing MCP server: %s", mcp_config.name)
+                install_mcp_server(mcp_config)
+
+        return final_template.to_agent_config()
+
+
+# --------------------------------------------------------------------------- #
+# Built-in Quickstart Templates
+# --------------------------------------------------------------------------- #
+
+def get_default_catalog() -> AgentTemplateCatalog:
+    """Return a catalog with built-in quickstart templates."""
+    templates = [
+        AgentTemplate(
+            id="code-assistant",
+            name="Code Assistant",
+            description="Helps with code generation, review, and debugging.",
+            system_prompt="You are an expert software engineer. Assist with writing, reviewing, and debugging code.",
+            model="gpt-4",
+            tools=[
+                ToolAssignment(name="execute_python", config={}),
+                ToolAssignment(name="search_web", config={"engine": "duckduckgo"}),
+            ],
+            mcp_servers=[
+                MCPServerConfig(name="filesystem", command="npx", args=["-y", "@modelcontextprotocol/server-filesystem"]),
+            ],
+            tags=["coding", "development", "quickstart"],
+        ),
+        AgentTemplate(
+            id="data-analyst",
+            name="Data Analyst",
+            description="Analyze data, create visualizations, and generate reports.",
+            system_prompt="You are a data analyst. Help users explore data, build charts, and derive insights.",
+            model="gpt-4",
+            tools=[
+                ToolAssignment(name="execute_python", config={}),
+                ToolAssignment(name="read_file", config={}),
+            ],
+            mcp_servers=[
+                MCPServerConfig(name="sqlite", command="uvx", args=["mcp-server-sqlite", "--db-path", "/tmp/analysis.db"]),
+            ],
+            tags=["data", "analytics", "quickstart"],
+        ),
+        AgentTemplate(
+            id="customer-support",
+            name="Customer Support Agent",
+            description="Handles common customer inquiries and ticket management.",
+            system_prompt="You are a helpful customer support agent. Be polite, concise, and solution-oriented.",
+            model="gpt-3.5-turbo",
+            tools=[
+                ToolAssignment(name="search_knowledge_base", config={"source": "internal"}),
+                ToolAssignment(name="create_ticket", config={"system": "zendesk"}),
+            ],
+            mcp_servers=[],
+            tags=["support", "customer-service", "quickstart"],
+        ),
+    ]
+    return AgentTemplateCatalog(templates)
+
+
+# --------------------------------------------------------------------------- #
+# Convenience Functions
+# --------------------------------------------------------------------------- #
+
+def quickstart_deploy(template_id: str, **overrides: Any) -> AgentConfig:
+    """One-liner to deploy a built-in template with optional overrides."""
+    catalog = get_default_catalog()
+    return catalog.deploy_template(template_id, **overrides)
+
+
+# --------------------------------------------------------------------------- #
+# Tests
+# --------------------------------------------------------------------------- #
+
+def test_catalog_operations():
+    """Test basic catalog operations."""
+    catalog = get_default_catalog()
+    assert len(catalog.list_templates()) == 3
+
+    tmpl = catalog.get("code-assistant")
+    assert tmpl is not None
+    assert "coding" in tmpl.tags
+
+    results = catalog.search_by_tag("quickstart")
+    assert len(results) == 3
+
+    results = catalog.search_by_tag("data")
+    assert len(results) == 1
+    assert results[0].id == "data-analyst"
+
+
+def test_template_serialization():
+    """Test template to/from dict conversion."""
+    original = AgentTemplate(
+        id="test",
+        name="Test Agent",
+        description="A test template.",
+        system_prompt="You are a test.",
+        model="test-model",
+        tools=[ToolAssignment(name="test_tool", config={"key": "value"})],
+        mcp_servers=[MCPServerConfig(name="test-mcp", command="echo", args=["hello"])],
+        tags=["test"],
+    )
+    data = original.to_dict()
+    restored = AgentTemplate
