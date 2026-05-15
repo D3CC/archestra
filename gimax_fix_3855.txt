@@ -1,0 +1,231 @@
+```python
+"""
+Windmill MCP Apps Server for Archestra
+
+This module implements an MCP server that integrates with Windmill to create and manage
+workflows as interactive MCP Apps. It allows users to create workflows (e.g., fetch from
+Confluence and send email) and display them as editable node-based apps in Archestra.
+
+Based on: https://github.com/archestra-ai/archestra
+"""
+
+import json
+import logging
+import os
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+import httpx
+from pydantic import BaseModel, Field
+
+from archestra.mcp import MCPServer, MCPRequest, MCPResponse, MCPTool, MCPResource
+
+logger = logging.getLogger(__name__)
+
+# --- Configuration ---
+
+class WindmillConfig(BaseModel):
+    """Configuration for Windmill connection."""
+    base_url: str = Field(default="http://localhost:8000", description="Windmill API base URL")
+    api_token: Optional[str] = Field(default=None, description="Windmill API token")
+    workspace_id: str = Field(default="default", description="Windmill workspace ID")
+
+# --- Data Models ---
+
+class WorkflowNode(BaseModel):
+    """Represents a single node in a Windmill workflow."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    type: str = Field(..., description="Node type (e.g., 'script', 'trigger', 'condition')")
+    label: str = Field(..., description="Human-readable label")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Node-specific configuration")
+    position: Dict[str, float] = Field(default_factory=lambda: {"x": 0.0, "y": 0.0})
+
+class WorkflowEdge(BaseModel):
+    """Represents a connection between two nodes."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    source: str = Field(..., description="Source node ID")
+    target: str = Field(..., description="Target node ID")
+    label: Optional[str] = Field(default=None)
+
+class Workflow(BaseModel):
+    """Complete workflow definition."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    name: str = Field(..., description="Workflow name")
+    description: Optional[str] = Field(default="")
+    nodes: List[WorkflowNode] = Field(default_factory=list)
+    edges: List[WorkflowEdge] = Field(default_factory=list)
+    created_at: str = Field(default_factory=lambda: __import__("datetime").datetime.now().isoformat())
+
+# --- Windmill Client ---
+
+class WindmillClient:
+    """Client for interacting with Windmill API."""
+
+    def __init__(self, config: WindmillConfig):
+        self.config = config
+        self.client = httpx.AsyncClient(
+            base_url=config.base_url,
+            headers=self._build_headers(),
+            timeout=30.0,
+        )
+
+    def _build_headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.config.api_token:
+            headers["Authorization"] = f"Bearer {self.config.api_token}"
+        return headers
+
+    async def create_workflow(self, workflow: Workflow) -> str:
+        """Create a new workflow in Windmill."""
+        payload = {
+            "workspace_id": self.config.workspace_id,
+            "name": workflow.name,
+            "description": workflow.description,
+            "nodes": [node.dict() for node in workflow.nodes],
+            "edges": [edge.dict() for edge in workflow.edges],
+        }
+        response = await self.client.post("/api/w/v1/workflows", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("id", workflow.id)
+
+    async def get_workflow(self, workflow_id: str) -> Optional[Workflow]:
+        """Fetch a workflow by ID."""
+        response = await self.client.get(f"/api/w/v1/workflows/{workflow_id}")
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        data = response.json()
+        return Workflow(**data)
+
+    async def update_workflow(self, workflow: Workflow) -> bool:
+        """Update an existing workflow."""
+        payload = {
+            "name": workflow.name,
+            "description": workflow.description,
+            "nodes": [node.dict() for node in workflow.nodes],
+            "edges": [edge.dict() for edge in workflow.edges],
+        }
+        response = await self.client.put(f"/api/w/v1/workflows/{workflow.id}", json=payload)
+        response.raise_for_status()
+        return True
+
+    async def delete_workflow(self, workflow_id: str) -> bool:
+        """Delete a workflow."""
+        response = await self.client.delete(f"/api/w/v1/workflows/{workflow_id}")
+        response.raise_for_status()
+        return True
+
+    async def list_workflows(self) -> List[Workflow]:
+        """List all workflows in the workspace."""
+        response = await self.client.get(f"/api/w/v1/workflows", params={"workspace_id": self.config.workspace_id})
+        response.raise_for_status()
+        data = response.json()
+        return [Workflow(**item) for item in data.get("workflows", [])]
+
+    async def close(self):
+        """Close the HTTP client."""
+        await self.client.aclose()
+
+# --- MCP Server Implementation ---
+
+class WindmillMCPServer(MCPServer):
+    """
+    MCP server that exposes Windmill workflows as interactive MCP Apps.
+    Supports creating, reading, updating, and deleting workflows with node-based editing.
+    """
+
+    def __init__(self, config: Optional[WindmillConfig] = None):
+        super().__init__(
+            name="windmill-mcp-apps",
+            description="Windmill MCP Apps Server - Create and manage workflows as interactive apps",
+            version="1.0.0",
+        )
+        self.config = config or WindmillConfig()
+        self.client = WindmillClient(self.config)
+        self._register_tools()
+        self._register_resources()
+
+    def _register_tools(self):
+        """Register MCP tools for workflow management."""
+
+        @self.tool(
+            name="create_workflow",
+            description="Create a new Windmill workflow with nodes and edges",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Workflow name"},
+                    "description": {"type": "string", "description": "Optional description"},
+                    "nodes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string"},
+                                "label": {"type": "string"},
+                                "config": {"type": "object"},
+                            },
+                            "required": ["type", "label"],
+                        },
+                    },
+                    "edges": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "source": {"type": "string"},
+                                "target": {"type": "string"},
+                            },
+                            "required": ["source", "target"],
+                        },
+                    },
+                },
+                "required": ["name", "nodes", "edges"],
+            },
+        )
+        async def create_workflow_tool(request: MCPRequest) -> MCPResponse:
+            params = request.params
+            workflow = Workflow(
+                name=params["name"],
+                description=params.get("description", ""),
+                nodes=[WorkflowNode(**n) for n in params["nodes"]],
+                edges=[WorkflowEdge(**e) for e in params["edges"]],
+            )
+            try:
+                workflow_id = await self.client.create_workflow(workflow)
+                return MCPResponse.success({"workflow_id": workflow_id, "workflow": workflow.dict()})
+            except Exception as e:
+                logger.error(f"Failed to create workflow: {e}")
+                return MCPResponse.error(f"Failed to create workflow: {str(e)}")
+
+        @self.tool(
+            name="get_workflow",
+            description="Retrieve a workflow by ID",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string", "description": "Workflow ID"},
+                },
+                "required": ["workflow_id"],
+            },
+        )
+        async def get_workflow_tool(request: MCPRequest) -> MCPResponse:
+            workflow_id = request.params["workflow_id"]
+            try:
+                workflow = await self.client.get_workflow(workflow_id)
+                if workflow is None:
+                    return MCPResponse.error(f"Workflow {workflow_id} not found")
+                return MCPResponse.success({"workflow": workflow.dict()})
+            except Exception as e:
+                logger.error(f"Failed to get workflow: {e}")
+                return MCPResponse.error(f"Failed to get workflow: {str(e)}")
+
+        @self.tool(
+            name="update_workflow",
+            description="Update an existing workflow",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string"},
+                    "name
