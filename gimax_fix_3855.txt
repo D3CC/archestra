@@ -1,0 +1,254 @@
+```python
+"""
+Windmill MCP Apps Server for Archestra
+
+This module implements an MCP server that integrates with Windmill to create and manage
+workflows as interactive MCP Apps within Archestra. It supports creating workflows,
+editing nodes, and displaying them as interactive apps.
+
+Based on the pattern shown in the n8n integration example.
+"""
+
+import json
+import logging
+import os
+from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin
+
+import httpx
+from pydantic import BaseModel, Field
+
+from archestra.mcp import MCPServer, MCPApp, MCPNode, MCPConnection
+from archestra.mcp.exceptions import MCPError
+
+logger = logging.getLogger(__name__)
+
+
+# --- Data Models ---
+
+class WindmillConfig(BaseModel):
+    """Configuration for Windmill connection."""
+    base_url: str = Field(default="https://app.windmill.dev", description="Windmill instance URL")
+    workspace: str = Field(default="default", description="Windmill workspace")
+    api_token: str = Field(default="", description="API token for authentication")
+
+
+class WindmillWorkflow(BaseModel):
+    """Represents a Windmill workflow."""
+    id: str
+    name: str
+    description: str = ""
+    nodes: List[Dict[str, Any]] = Field(default_factory=list)
+    connections: List[Dict[str, Any]] = Field(default_factory=list)
+    raw_data: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowNode(BaseModel):
+    """Represents a node in a workflow."""
+    id: str
+    type: str
+    label: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+    position: Dict[str, float] = Field(default_factory=lambda: {"x": 0, "y": 0})
+
+
+class WorkflowConnection(BaseModel):
+    """Represents a connection between nodes."""
+    source: str
+    target: str
+    source_handle: str = "output"
+    target_handle: str = "input"
+
+
+# --- Windmill Client ---
+
+class WindmillClient:
+    """Client for interacting with Windmill API."""
+
+    def __init__(self, config: WindmillConfig):
+        self.config = config
+        self.base_url = config.base_url.rstrip("/")
+        self.workspace = config.workspace
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            headers={
+                "Authorization": f"Bearer {config.api_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30.0,
+        )
+
+    async def close(self):
+        await self._client.aclose()
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Make an API request to Windmill."""
+        url = f"/api/w/{self.workspace}/{path.lstrip('/')}"
+        try:
+            response = await self._client.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Windmill API error: {e.response.status_code} - {e.response.text}")
+            raise MCPError(f"Windmill API error: {e.response.status_code}") from e
+        except httpx.RequestError as e:
+            logger.error(f"Windmill request failed: {e}")
+            raise MCPError(f"Failed to connect to Windmill: {e}") from e
+
+    async def list_workflows(self) -> List[WindmillWorkflow]:
+        """List all workflows in the workspace."""
+        data = await self._request("GET", "scripts/list")
+        workflows = []
+        for item in data:
+            workflows.append(WindmillWorkflow(
+                id=item.get("id", ""),
+                name=item.get("name", "Unnamed"),
+                description=item.get("description", ""),
+                raw_data=item,
+            ))
+        return workflows
+
+    async def get_workflow(self, workflow_id: str) -> WindmillWorkflow:
+        """Get a specific workflow by ID."""
+        data = await self._request("GET", f"scripts/get/{workflow_id}")
+        return WindmillWorkflow(
+            id=data.get("id", workflow_id),
+            name=data.get("name", "Unnamed"),
+            description=data.get("description", ""),
+            nodes=data.get("nodes", []),
+            connections=data.get("connections", []),
+            raw_data=data,
+        )
+
+    async def create_workflow(
+        self,
+        name: str,
+        description: str = "",
+        nodes: Optional[List[Dict[str, Any]]] = None,
+        connections: Optional[List[Dict[str, Any]]] = None,
+    ) -> WindmillWorkflow:
+        """Create a new workflow."""
+        payload = {
+            "name": name,
+            "description": description,
+            "nodes": nodes or [],
+            "connections": connections or [],
+        }
+        data = await self._request("POST", "scripts/create", json=payload)
+        return WindmillWorkflow(
+            id=data.get("id", ""),
+            name=name,
+            description=description,
+            nodes=payload["nodes"],
+            connections=payload["connections"],
+            raw_data=data,
+        )
+
+    async def update_workflow(
+        self,
+        workflow_id: str,
+        nodes: List[Dict[str, Any]],
+        connections: List[Dict[str, Any]],
+    ) -> WindmillWorkflow:
+        """Update an existing workflow's nodes and connections."""
+        payload = {
+            "nodes": nodes,
+            "connections": connections,
+        }
+        data = await self._request("PUT", f"scripts/update/{workflow_id}", json=payload)
+        return WindmillWorkflow(
+            id=workflow_id,
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            nodes=nodes,
+            connections=connections,
+            raw_data=data,
+        )
+
+    async def delete_workflow(self, workflow_id: str) -> bool:
+        """Delete a workflow."""
+        try:
+            await self._request("DELETE", f"scripts/delete/{workflow_id}")
+            return True
+        except MCPError:
+            return False
+
+    async def run_workflow(self, workflow_id: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Run a workflow and return the result."""
+        payload = {"args": args or {}}
+        data = await self._request("POST", f"jobs/run/{workflow_id}", json=payload)
+        return data
+
+
+# --- MCP Server Implementation ---
+
+class WindmillMCPServer(MCPServer):
+    """
+    MCP Server that integrates Windmill workflows as interactive MCP Apps.
+    
+    This server allows Archestra to:
+    - List Windmill workflows as MCP Apps
+    - View and edit workflow nodes interactively
+    - Create new workflows from templates
+    - Run workflows and see results
+    """
+
+    def __init__(self, config: Optional[WindmillConfig] = None):
+        super().__init__(
+            name="windmill-mcp",
+            version="1.0.0",
+            description="Windmill Workflow Integration for Archestra MCP Apps",
+        )
+        self.config = config or WindmillConfig()
+        self.client = WindmillClient(self.config)
+        self._register_handlers()
+
+    def _register_handlers(self):
+        """Register MCP request handlers."""
+        self.register_handler("list_apps", self.handle_list_apps)
+        self.register_handler("get_app", self.handle_get_app)
+        self.register_handler("create_app", self.handle_create_app)
+        self.register_handler("update_app", self.handle_update_app)
+        self.register_handler("delete_app", self.handle_delete_app)
+        self.register_handler("run_app", self.handle_run_app)
+        self.register_handler("get_node_types", self.handle_get_node_types)
+
+    async def handle_list_apps(self, params: Dict[str, Any]) -> List[MCPApp]:
+        """List all Windmill workflows as MCP Apps."""
+        workflows = await self.client.list_workflows()
+        apps = []
+        for wf in workflows:
+            app = MCPApp(
+                id=wf.id,
+                name=wf.name,
+                description=wf.description,
+                type="windmill_workflow",
+                metadata={"workspace": self.config.workspace},
+            )
+            apps.append(app)
+        return apps
+
+    async def handle_get_app(self, params: Dict[str, Any]) -> MCPApp:
+        """Get a specific workflow as an MCP App with its nodes."""
+        workflow_id = params.get("id")
+        if not workflow_id:
+            raise MCPError("Missing workflow ID")
+
+        workflow = await self.client.get_workflow(workflow_id)
+        
+        # Convert Windmill nodes to MCP nodes
+        mcp_nodes = []
+        for node_data in workflow.nodes:
+            node = MCPNode(
+                id=node_data.get("id", ""),
+                type=node_data.get("type", "unknown"),
+                label=node_data.get("label", "Node"),
+                config=node_data.get("config", {}),
+                position=node_data.get("position", {"x": 0, "y": 0}),
+            )
+           
