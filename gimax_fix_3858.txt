@@ -1,0 +1,243 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+import { z } from 'zod';
+import { AgentTemplate, AgentTemplateSchema, MCPPackage } from './types';
+
+/**
+ * Pre-built agent template catalog for quickstart deployments.
+ * Each template includes system prompt, model configuration, tool assignments,
+ * and associated MCP server packages for one-click installation.
+ */
+export class AgentTemplateCatalog {
+  private templates: Map<string, AgentTemplate> = new Map();
+
+  constructor() {
+    this.registerDefaults();
+  }
+
+  /**
+   * Register a new agent template.
+   * @throws if template with same id already exists
+   */
+  register(template: AgentTemplate): void {
+    const parsed = AgentTemplateSchema.parse(template);
+    if (this.templates.has(parsed.id)) {
+      throw new Error(`Template '${parsed.id}' already registered`);
+    }
+    this.templates.set(parsed.id, parsed);
+  }
+
+  /**
+   * Retrieve a template by id.
+   */
+  get(id: string): AgentTemplate | undefined {
+    return this.templates.get(id);
+  }
+
+  /**
+   * List all available templates.
+   */
+  list(): AgentTemplate[] {
+    return Array.from(this.templates.values());
+  }
+
+  /**
+   * Remove a template by id.
+   */
+  remove(id: string): boolean {
+    return this.templates.delete(id);
+  }
+
+  /**
+   * Install MCP servers for a given template.
+   * Returns installation commands per package.
+   */
+  installMcpServers(templateId: string): string[] {
+    const template = this.get(templateId);
+    if (!template) {
+      throw new Error(`Template '${templateId}' not found`);
+    }
+    return template.mcpPackages.map(pkg => {
+      const args = pkg.args ? ` ${pkg.args.join(' ')}` : '';
+      return `npx @anthropic/mcp-installer install ${pkg.name}${args}`;
+    });
+  }
+
+  /**
+   * Register built-in quickstart templates.
+   */
+  private registerDefaults(): void {
+    this.register({
+      id: 'code-reviewer',
+      name: 'Code Reviewer',
+      description: 'Expert code reviewer with static analysis tools',
+      systemPrompt: 'You are an expert code reviewer. Analyze code for bugs, style issues, and security vulnerabilities. Provide constructive feedback.',
+      model: 'claude-3-5-sonnet-20241022',
+      tools: ['read_file', 'write_file', 'list_directory', 'search_code'],
+      mcpPackages: [
+        { name: '@anthropic/mcp-code-analyzer', args: ['--severity', 'all'] },
+        { name: '@anthropic/mcp-github', args: [] }
+      ]
+    });
+
+    this.register({
+      id: 'data-analyst',
+      name: 'Data Analyst',
+      description: 'SQL and data visualization specialist',
+      systemPrompt: 'You are a data analyst assistant. Help users query databases, generate reports, and create visualizations.',
+      model: 'claude-3-5-sonnet-20241022',
+      tools: ['execute_sql', 'read_file', 'write_file', 'search_web'],
+      mcpPackages: [
+        { name: '@anthropic/mcp-sqlite', args: ['--db-path', './data.db'] },
+        { name: '@anthropic/mcp-chart', args: [] }
+      ]
+    });
+
+    this.register({
+      id: 'customer-support',
+      name: 'Customer Support Agent',
+      description: 'Handles customer inquiries with CRM integration',
+      systemPrompt: 'You are a helpful customer support agent. Be polite, empathetic, and solution-oriented. Use the CRM tools to look up customer data.',
+      model: 'claude-3-haiku-20240307',
+      tools: ['search_knowledge_base', 'lookup_customer', 'create_ticket', 'send_email'],
+      mcpPackages: [
+        { name: '@anthropic/mcp-hubspot', args: [] },
+        { name: '@anthropic/mcp-zendesk', args: [] }
+      ]
+    });
+  }
+}
+
+// src/catalog/types.ts
+import { z } from 'zod';
+
+export const MCPPackageSchema = z.object({
+  name: z.string().min(1),
+  args: z.array(z.string()).optional().default([])
+});
+
+export const AgentTemplateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().optional().default(''),
+  systemPrompt: z.string().min(1),
+  model: z.string().min(1),
+  tools: z.array(z.string()).optional().default([]),
+  mcpPackages: z.array(MCPPackageSchema).optional().default([])
+});
+
+export type MCPPackage = z.infer<typeof MCPPackageSchema>;
+export type AgentTemplate = z.infer<typeof AgentTemplateSchema>;
+
+// src/catalog/index.ts
+export { AgentTemplateCatalog } from './agent-template-catalog';
+export { AgentTemplateSchema, MCPPackageSchema } from './types';
+export type { AgentTemplate, MCPPackage } from './types';
+
+// tests/catalog/agent-template-catalog.test.ts
+import { describe, it, expect, beforeEach } from 'vitest';
+import { AgentTemplateCatalog } from '../../src/catalog/agent-template-catalog';
+import { AgentTemplate } from '../../src/catalog/types';
+
+describe('AgentTemplateCatalog', () => {
+  let catalog: AgentTemplateCatalog;
+
+  beforeEach(() => {
+    catalog = new AgentTemplateCatalog();
+  });
+
+  describe('default templates', () => {
+    it('should have three default templates', () => {
+      expect(catalog.list()).toHaveLength(3);
+    });
+
+    it('should contain code-reviewer template', () => {
+      const template = catalog.get('code-reviewer');
+      expect(template).toBeDefined();
+      expect(template!.name).toBe('Code Reviewer');
+      expect(template!.model).toBe('claude-3-5-sonnet-20241022');
+      expect(template!.tools).toContain('search_code');
+      expect(template!.mcpPackages).toHaveLength(2);
+    });
+
+    it('should contain data-analyst template', () => {
+      const template = catalog.get('data-analyst');
+      expect(template).toBeDefined();
+      expect(template!.systemPrompt).toContain('data analyst');
+      expect(template!.mcpPackages[0].name).toBe('@anthropic/mcp-sqlite');
+    });
+
+    it('should contain customer-support template', () => {
+      const template = catalog.get('customer-support');
+      expect(template).toBeDefined();
+      expect(template!.model).toBe('claude-3-haiku-20240307');
+      expect(template!.tools).toContain('create_ticket');
+    });
+  });
+
+  describe('register', () => {
+    it('should register a new template', () => {
+      const template: AgentTemplate = {
+        id: 'custom-agent',
+        name: 'Custom Agent',
+        description: 'My custom agent',
+        systemPrompt: 'You are a custom agent.',
+        model: 'gpt-4',
+        tools: ['custom_tool'],
+        mcpPackages: [{ name: 'custom-mcp', args: ['--flag'] }]
+      };
+      catalog.register(template);
+      expect(catalog.get('custom-agent')).toEqual(template);
+    });
+
+    it('should throw when registering duplicate id', () => {
+      expect(() => catalog.register({
+        id: 'code-reviewer',
+        name: 'Duplicate',
+        systemPrompt: 'test',
+        model: 'test'
+      })).toThrow('already registered');
+    });
+
+    it('should validate template schema on register', () => {
+      expect(() => catalog.register({
+        id: '',
+        name: 'Invalid',
+        systemPrompt: 'test',
+        model: 'test'
+      } as any)).toThrow();
+    });
+  });
+
+  describe('remove', () => {
+    it('should remove an existing template', () => {
+      expect(catalog.remove('code-reviewer')).toBe(true);
+      expect(catalog.get('code-reviewer')).toBeUndefined();
+    });
+
+    it('should return false for non-existent template', () => {
+      expect(catalog.remove('non-existent')).toBe(false);
+    });
+  });
+
+  describe('installMcpServers', () => {
+    it('should generate install commands for template', () => {
+      const commands = catalog.installMcpServers('code-reviewer');
+      expect(commands).toHaveLength(2);
+      expect(commands[0]).toContain('npx @anthropic/mcp-installer install');
+      expect(commands[0]).toContain('@anthropic/mcp-code-analyzer');
+      expect(commands[0]).toContain('--severity all');
+    });
+
+    it('should throw for non-existent template', () => {
+      expect(() => catalog.installMcpServers('ghost')).toThrow('not found');
+    });
+  });
+
+  describe('list', () => {
+    it('should return all registered templates', () => {
+      const templates = catalog.list();
+      expect(templates).toHaveLength(3);
+      templates.forEach(t => {
+        expect(t.id).toBeDefined();
+        expect(t.name).toBeDefined
