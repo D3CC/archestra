@@ -1,0 +1,252 @@
+```python
+# archestra/agent_templates/catalog.py
+"""
+Agent template catalog module for quickstart deployment of pre-built agents.
+Provides a registry of agent templates with system prompts, model configs,
+tool assignments, and MCP server installation support.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from archestra.agents.base import AgentConfig
+from archestra.mcp.server import MCPServerConfig
+from archestra.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AgentTemplate:
+    """Represents a pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    tool_ids: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig for agent instantiation."""
+        return AgentConfig(
+            name=self.name,
+            system_prompt=self.system_prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tool_ids=self.tool_ids,
+            mcp_servers=self.mcp_servers,
+            metadata=self.metadata,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        mcp_servers = [
+            MCPServerConfig(**srv) if isinstance(srv, dict) else srv
+            for srv in data.pop("mcp_servers", [])
+        ]
+        return cls(mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Catalog Registry
+# ---------------------------------------------------------------------------
+
+class AgentTemplateCatalog:
+    """
+    Registry of agent templates. Supports loading from YAML/JSON files,
+    programmatic registration, and one-click deployment.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+
+    # ---- Registration ----
+
+    def register(self, template: AgentTemplate) -> None:
+        if template.id in self._templates:
+            logger.warning("Overwriting template with id '%s'", template.id)
+        self._templates[template.id] = template
+
+    def unregister(self, template_id: str) -> None:
+        self._templates.pop(template_id, None)
+
+    def get(self, template_id: str) -> Optional[AgentTemplate]:
+        return self._templates.get(template_id)
+
+    def list_templates(self) -> List[AgentTemplate]:
+        return list(self._templates.values())
+
+    def find_by_name(self, name: str) -> Optional[AgentTemplate]:
+        for t in self._templates.values():
+            if t.name == name:
+                return t
+        return None
+
+    # ---- Bulk loading ----
+
+    def load_from_file(self, path: Path) -> int:
+        """Load templates from a YAML or JSON file. Returns count loaded."""
+        if not path.exists():
+            raise FileNotFoundError(f"Template file not found: {path}")
+
+        suffix = path.suffix.lower()
+        with open(path, "r", encoding="utf-8") as f:
+            if suffix in (".yaml", ".yml"):
+                data = yaml.safe_load(f)
+            elif suffix == ".json":
+                data = json.load(f)
+            else:
+                raise ValueError(f"Unsupported file format: {suffix}")
+
+        templates_data = data if isinstance(data, list) else data.get("templates", [])
+        count = 0
+        for item in templates_data:
+            template = AgentTemplate.from_dict(item)
+            self.register(template)
+            count += 1
+        logger.info("Loaded %d templates from %s", count, path)
+        return count
+
+    def load_from_directory(self, directory: Path) -> int:
+        """Load all .yaml, .yml, .json files from a directory."""
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Not a directory: {directory}")
+        total = 0
+        for ext in ("*.yaml", "*.yml", "*.json"):
+            for filepath in directory.glob(ext):
+                total += self.load_from_file(filepath)
+        return total
+
+    # ---- Deployment ----
+
+    def deploy(self, template_id: str, tool_registry: ToolRegistry) -> AgentConfig:
+        """
+        One-click deployment: resolve template, install MCP servers,
+        and return an AgentConfig ready for agent creation.
+        """
+        template = self.get(template_id)
+        if template is None:
+            raise ValueError(f"Template '{template_id}' not found in catalog.")
+
+        # Install MCP servers (simulated – actual installation delegated to MCP manager)
+        for mcp_config in template.mcp_servers:
+            logger.info("Installing MCP server: %s", mcp_config.name)
+            # In production: mcp_manager.install(mcp_config)
+            # For now, we assume the server config is valid and ready.
+
+        # Ensure tools are registered
+        for tool_id in template.tool_ids:
+            if not tool_registry.has(tool_id):
+                logger.warning("Tool '%s' not registered; skipping.", tool_id)
+
+        return template.to_agent_config()
+
+    # ---- Serialization ----
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "templates": [t.to_dict() for t in self._templates.values()]
+        }
+
+    def save_to_file(self, path: Path) -> None:
+        """Save catalog to a YAML file."""
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
+
+
+# ---------------------------------------------------------------------------
+# Built-in Quickstart Templates
+# ---------------------------------------------------------------------------
+
+def create_default_catalog() -> AgentTemplateCatalog:
+    """Create a catalog with a set of built-in quickstart templates."""
+    catalog = AgentTemplateCatalog()
+
+    # Template: Customer Support Agent
+    catalog.register(AgentTemplate(
+        id="customer-support-v1",
+        name="Customer Support Agent",
+        description="Handles common customer inquiries with empathy and accuracy.",
+        system_prompt=(
+            "You are a helpful customer support agent. Respond politely and "
+            "provide accurate information. If you don't know an answer, "
+            "escalate to a human agent."
+        ),
+        model="gpt-4",
+        temperature=0.3,
+        max_tokens=1024,
+        tool_ids=["search_knowledge_base", "create_ticket", "get_order_status"],
+        mcp_servers=[
+            MCPServerConfig(name="knowledge-base", url="http://localhost:8001"),
+        ],
+        metadata={"version": "1.0", "category": "support"},
+    ))
+
+    # Template: Code Review Assistant
+    catalog.register(AgentTemplate(
+        id="code-review-v1",
+        name="Code Review Assistant",
+        description="Reviews code diffs and provides constructive feedback.",
+        system_prompt=(
+            "You are an expert code reviewer. Analyze the provided code diff, "
+            "identify potential bugs, style issues, and suggest improvements. "
+            "Be concise and constructive."
+        ),
+        model="gpt-4-turbo",
+        temperature=0.2,
+        max_tokens=4096,
+        tool_ids=["fetch_repo", "run_linter", "check_security"],
+        mcp_servers=[
+            MCPServerConfig(name="repo-service", url="http://localhost:8002"),
+            MCPServerConfig(name="linter-service", url="http://localhost:8003"),
+        ],
+        metadata={"version": "1.0", "category": "development"},
+    ))
+
+    # Template: Data Analyst
+    catalog.register(AgentTemplate(
+        id="data-analyst-v1",
+        name="Data Analyst",
+        description="Analyzes datasets and generates insights with visualizations.",
+        system_prompt=(
+            "You are a data analyst assistant. Help users explore data, "
+            "generate statistics, and create visualizations. Always explain "
+            "your findings in plain language."
+        ),
+        model="gpt-4",
+        temperature=0.5,
+        max_tokens=2048,
+        tool_ids=["query_database", "generate_chart", "export_csv"],
+        mcp_servers=[
+            MCPServerConfig(name="data-warehouse", url="http://localhost:8004"),
+        ],
+        metadata={"version": "1.0", "category": "analytics"},
+    ))
+
+    return catalog
+
+
+# ---------------------------------------------------------------------------
+# Convenience function for one-click deploy
+# ---------------------------------------------------------------------------
+
+def quickstart_deploy(
+    template_id:
