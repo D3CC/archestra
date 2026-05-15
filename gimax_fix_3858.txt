@@ -1,0 +1,246 @@
+```python
+"""
+Agent Template Catalog - Quickstart catalog of pre-built agent templates.
+
+This module provides a catalog of pre-configured agent templates that users can
+deploy with a single click. Each template includes system prompt, model configuration,
+tool assignments, and MCP server installations.
+
+Usage:
+    from archestra.agents.templates import TemplateCatalog, AgentTemplate
+    
+    catalog = TemplateCatalog()
+    templates = catalog.list_templates()
+    agent = catalog.instantiate("research-assistant")
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+class TemplateCategory(str, Enum):
+    """Categories for agent templates."""
+    RESEARCH = "research"
+    CODING = "coding"
+    WRITING = "writing"
+    DATA_ANALYSIS = "data_analysis"
+    CUSTOMER_SUPPORT = "customer_support"
+    PRODUCTIVITY = "productivity"
+    CUSTOM = "custom"
+
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to install with the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env_vars: Dict[str, str] = field(default_factory=dict)
+    description: str = ""
+
+
+@dataclass
+class AgentTemplate:
+    """
+    A pre-built agent template with all configuration needed to spin up an agent.
+    
+    Attributes:
+        id: Unique identifier for the template.
+        name: Human-readable name.
+        description: Brief description of what this agent does.
+        category: Category of the template.
+        system_prompt: The system prompt for the agent.
+        model: Model identifier (e.g., "gpt-4", "claude-3-opus").
+        tools: List of tool names to assign.
+        mcp_servers: List of MCP server configurations to install.
+        parameters: Additional model parameters (temperature, max_tokens, etc.).
+        tags: List of tags for filtering/searching.
+        version: Template version string.
+        author: Template author.
+    """
+    id: str
+    name: str
+    description: str
+    category: TemplateCategory = TemplateCategory.CUSTOM
+    system_prompt: str = ""
+    model: str = "gpt-4"
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    parameters: Dict[str, Any] = field(default_factory=lambda: {
+        "temperature": 0.7,
+        "max_tokens": 4096,
+    })
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+    author: str = "Archestra AI"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        result = asdict(self)
+        result["category"] = self.category.value
+        result["mcp_servers"] = [
+            {**asdict(server), "env_vars": dict(server.env_vars)}
+            for server in self.mcp_servers
+        ]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize template from dictionary."""
+        data = data.copy()
+        data["category"] = TemplateCategory(data.get("category", "custom"))
+        mcp_servers_data = data.pop("mcp_servers", [])
+        data["mcp_servers"] = [MCPServerConfig(**s) for s in mcp_servers_data]
+        return cls(**data)
+
+
+class TemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+    
+    Provides methods to list, search, get, and instantiate templates.
+    Templates can be loaded from built-in defaults or from external JSON files.
+    """
+
+    def __init__(self, custom_path: Optional[Path] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        self._load_builtin_templates()
+        if custom_path:
+            self.load_from_file(custom_path)
+
+    def _load_builtin_templates(self) -> None:
+        """Load the built-in default templates."""
+        builtin = [
+            AgentTemplate(
+                id="research-assistant",
+                name="Research Assistant",
+                description="A research assistant that can search the web, summarize articles, and answer questions.",
+                category=TemplateCategory.RESEARCH,
+                system_prompt="You are a research assistant. Help users find information, "
+                              "summarize findings, and answer questions based on reliable sources.",
+                model="gpt-4",
+                tools=["web_search", "web_scrape", "summarize"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="search-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-server-search"],
+                        description="Web search and scraping capabilities",
+                    )
+                ],
+                tags=["research", "search", "summarization"],
+            ),
+            AgentTemplate(
+                id="code-reviewer",
+                name="Code Reviewer",
+                description="An agent that reviews code for bugs, style issues, and security vulnerabilities.",
+                category=TemplateCategory.CODING,
+                system_prompt="You are an expert code reviewer. Analyze code for bugs, "
+                              "security issues, style problems, and suggest improvements.",
+                model="gpt-4",
+                tools=["code_analysis", "security_scan", "git_operations"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="code-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-server-code"],
+                        description="Code analysis and git operations",
+                    )
+                ],
+                parameters={"temperature": 0.3, "max_tokens": 8192},
+                tags=["coding", "review", "security"],
+            ),
+            AgentTemplate(
+                id="content-writer",
+                name="Content Writer",
+                description="A creative writing assistant for blogs, articles, and marketing copy.",
+                category=TemplateCategory.WRITING,
+                system_prompt="You are a creative content writer. Help users write engaging "
+                              "blog posts, articles, social media content, and marketing copy.",
+                model="gpt-4",
+                tools=["text_generation", "grammar_check", "seo_analysis"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="writing-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-server-writing"],
+                        description="Writing assistance and SEO tools",
+                    )
+                ],
+                parameters={"temperature": 0.8, "max_tokens": 4096},
+                tags=["writing", "content", "creative"],
+            ),
+            AgentTemplate(
+                id="data-analyst",
+                name="Data Analyst",
+                description="Analyze datasets, create visualizations, and generate reports.",
+                category=TemplateCategory.DATA_ANALYSIS,
+                system_prompt="You are a data analyst. Help users explore data, create "
+                              "visualizations, run statistical analyses, and generate reports.",
+                model="gpt-4",
+                tools=["data_query", "visualization", "statistical_analysis"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="data-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-server-data"],
+                        description="Data analysis and visualization tools",
+                    )
+                ],
+                tags=["data", "analysis", "visualization"],
+            ),
+            AgentTemplate(
+                id="customer-support",
+                name="Customer Support Agent",
+                description="Handle customer inquiries, troubleshoot issues, and escalate when needed.",
+                category=TemplateCategory.CUSTOMER_SUPPORT,
+                system_prompt="You are a customer support agent. Help users with their questions, "
+                              "troubleshoot problems, and escalate complex issues to human agents.",
+                model="gpt-4",
+                tools=["ticket_system", "knowledge_base", "sentiment_analysis"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="support-mcp",
+                        command="npx",
+                        args=["@archestra/mcp-server-support"],
+                        description="Customer support tools and ticketing",
+                    )
+                ],
+                parameters={"temperature": 0.5, "max_tokens": 2048},
+                tags=["support", "customer", "helpdesk"],
+            ),
+        ]
+        for template in builtin:
+            self._templates[template.id] = template
+
+    def list_templates(self, category: Optional[TemplateCategory] = None) -> List[AgentTemplate]:
+        """
+        List all templates, optionally filtered by category.
+        
+        Args:
+            category: If provided, only return templates in this category.
+            
+        Returns:
+            List of AgentTemplate objects.
+        """
+        if category:
+            return [t for t in self._templates.values() if t.category == category]
+        return list(self._templates.values())
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """
+        Get a template by its ID.
+        
+        Args:
+            template_id: The unique identifier of the template.
+            
+        Returns:
+            AgentTemplate if
