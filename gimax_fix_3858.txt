@@ -1,0 +1,231 @@
+```python
+# archestra/agent_templates/catalog.py
+
+"""
+Agent Template Catalog - Quickstart pre-built agent templates.
+
+This module provides a catalog of pre-configured agent templates that users
+can deploy with a single click. Each template includes a system prompt,
+model configuration, tool assignments, and MCP server installation details.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to be installed with the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    transport: str = "stdio"  # stdio or sse
+
+
+@dataclass
+class ToolAssignment:
+    """A tool assigned to the agent with its configuration."""
+    tool_name: str
+    mcp_server: str  # Name of the MCP server providing this tool
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    enabled: bool = True
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    version: str = "1.0.0"
+    system_prompt: str = ""
+    model: str = "gpt-4"
+    model_provider: str = "openai"
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    tools: List[ToolAssignment] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    tags: List[str] = field(default_factory=list)
+    category: str = "general"
+    author: str = "archestra"
+    is_official: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize template from dictionary."""
+        tools = [ToolAssignment(**t) for t in data.pop("tools", [])]
+        mcp_servers = [MCPServerConfig(**m) for m in data.pop("mcp_servers", [])]
+        return cls(tools=tools, mcp_servers=mcp_servers, **data)
+
+
+class TemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Provides methods to list, search, get, and deploy templates.
+    Templates can be loaded from built-in definitions or from external files.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+        self._load_builtin_templates()
+
+    def _load_builtin_templates(self) -> None:
+        """Load built-in templates shipped with the library."""
+        builtin = _get_builtin_templates()
+        for template in builtin:
+            if template.id not in self._templates:
+                self._templates[template.id] = template
+
+    def list_templates(self, category: Optional[str] = None) -> List[AgentTemplate]:
+        """List all templates, optionally filtered by category."""
+        templates = list(self._templates.values())
+        if category:
+            templates = [t for t in templates if t.category == category]
+        return templates
+
+    def search_templates(self, query: str) -> List[AgentTemplate]:
+        """Search templates by name, description, or tags."""
+        query_lower = query.lower()
+        results = []
+        for template in self._templates.values():
+            if (query_lower in template.name.lower()
+                    or query_lower in template.description.lower()
+                    or any(query_lower in tag.lower() for tag in template.tags)):
+                results.append(template)
+        return results
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """Get a template by its ID."""
+        return self._templates.get(template_id)
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """Add a custom template to the catalog."""
+        if template.id in self._templates:
+            logger.warning(f"Overwriting existing template: {template.id}")
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        """Remove a template from the catalog."""
+        return self._templates.pop(template_id, None) is not None
+
+    def deploy_template(self, template_id: str, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Prepare deployment configuration for a template.
+
+        Returns a dictionary with all necessary configuration to spin up the agent,
+        including MCP server installation commands and agent settings.
+        """
+        template = self.get_template(template_id)
+        if not template:
+            raise ValueError(f"Template not found: {template_id}")
+
+        config = template.to_dict()
+        if overrides:
+            config.update(overrides)
+
+        # Generate MCP server installation commands
+        mcp_install_commands = []
+        for server in template.mcp_servers:
+            cmd = f"mcp install {server.name}"
+            if server.command:
+                cmd += f" --command {server.command}"
+            if server.args:
+                cmd += " " + " ".join(server.args)
+            if server.env:
+                env_str = " ".join(f"{k}={v}" for k, v in server.env.items())
+                cmd = f"{env_str} {cmd}"
+            mcp_install_commands.append(cmd)
+
+        deployment = {
+            "agent_config": {
+                "system_prompt": template.system_prompt,
+                "model": template.model,
+                "model_provider": template.model_provider,
+                "temperature": template.temperature,
+                "max_tokens": template.max_tokens,
+                "tools": [t.tool_name for t in template.tools if t.enabled],
+            },
+            "mcp_servers": [asdict(s) for s in template.mcp_servers],
+            "mcp_install_commands": mcp_install_commands,
+            "template_id": template.id,
+            "template_name": template.name,
+        }
+        return deployment
+
+    def save_to_file(self, filepath: str) -> None:
+        """Save catalog to a JSON file."""
+        data = {tid: t.to_dict() for tid, t in self._templates.items()}
+        with open(filepath, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load_from_file(cls, filepath: str) -> "TemplateCatalog":
+        """Load catalog from a JSON file."""
+        with open(filepath) as f:
+            data = json.load(f)
+        templates = {tid: AgentTemplate.from_dict(tdata) for tid, tdata in data.items()}
+        return cls(templates=templates)
+
+
+def _get_builtin_templates() -> List[AgentTemplate]:
+    """Return built-in agent templates."""
+    return [
+        AgentTemplate(
+            id="customer-support-bot",
+            name="Customer Support Bot",
+            description="A helpful customer support agent with knowledge base and ticket creation tools.",
+            category="customer-support",
+            tags=["support", "customer-service", "helpdesk"],
+            system_prompt="You are a friendly and efficient customer support agent. "
+                          "Help users with their inquiries, create support tickets, "
+                          "and provide accurate information from the knowledge base.",
+            model="gpt-4",
+            tools=[
+                ToolAssignment(tool_name="search_knowledge_base", mcp_server="knowledge-base"),
+                ToolAssignment(tool_name="create_ticket", mcp_server="ticketing"),
+                ToolAssignment(tool_name="get_order_status", mcp_server="order-system"),
+            ],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="knowledge-base",
+                    command="npx",
+                    args=["@archestra/mcp-knowledge-base", "--port", "3100"],
+                ),
+                MCPServerConfig(
+                    name="ticketing",
+                    command="npx",
+                    args=["@archestra/mcp-ticketing", "--port", "3101"],
+                ),
+                MCPServerConfig(
+                    name="order-system",
+                    command="npx",
+                    args=["@archestra/mcp-order-system", "--port", "3102"],
+                ),
+            ],
+        ),
+        AgentTemplate(
+            id="code-reviewer",
+            name="Code Reviewer",
+            description="An AI code reviewer that analyzes pull requests and provides detailed feedback.",
+            category="development",
+            tags=["code-review", "development", "github"],
+            system_prompt="You are an expert code reviewer. Analyze code changes, "
+                          "identify potential bugs, suggest improvements, and ensure "
+                          "best practices are followed. Be constructive and thorough.",
+            model="gpt-4",
+            temperature=0.3,
+            tools=[
+                ToolAssignment(tool_name="analyze
