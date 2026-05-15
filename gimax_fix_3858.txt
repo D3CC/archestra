@@ -1,0 +1,200 @@
+```python
+"""
+Agent Template Catalog - Quickstart catalog of pre-built agent templates.
+
+This module provides a catalog of pre-built agent templates that allow users
+to spin up fully-configured agents with system prompts, models, tool assignments,
+and MCP server installations in a single click.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+import yaml
+from pydantic import BaseModel, Field, validator
+
+logger = logging.getLogger(__name__)
+
+
+class AgentCategory(str, Enum):
+    """Categories for agent templates."""
+    CODING = "coding"
+    DATA_ANALYSIS = "data_analysis"
+    WRITING = "writing"
+    RESEARCH = "research"
+    CUSTOMER_SUPPORT = "customer_support"
+    DEVOPS = "devops"
+    GENERAL = "general"
+
+
+class MCPServerConfig(BaseModel):
+    """Configuration for an MCP server to be installed with the agent."""
+    name: str = Field(..., description="Name of the MCP server")
+    url: Optional[str] = Field(None, description="URL to install the MCP server from")
+    package: Optional[str] = Field(None, description="Package name (e.g., npm, pip)")
+    version: Optional[str] = Field(None, description="Version constraint")
+    config: Dict[str, Any] = Field(default_factory=dict, description="Additional configuration")
+
+    @validator('url', 'package', always=True)
+    def check_url_or_package(cls, v, values):
+        if 'url' in values and 'package' in values:
+            if not values.get('url') and not values.get('package'):
+                raise ValueError('Either url or package must be provided')
+        return v
+
+
+class ToolAssignment(BaseModel):
+    """Assignment of a tool to an agent template."""
+    tool_name: str = Field(..., description="Name of the tool")
+    description: Optional[str] = Field(None, description="Description of the tool's purpose")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="Default parameters")
+    required_mcp: Optional[str] = Field(None, description="Required MCP server name")
+
+
+class AgentTemplate(BaseModel):
+    """A pre-built agent template for quickstart deployment."""
+    id: str = Field(..., description="Unique identifier for the template")
+    name: str = Field(..., description="Human-readable name")
+    description: str = Field(..., description="Brief description of the agent")
+    category: AgentCategory = Field(..., description="Category of the agent")
+    system_prompt: str = Field(..., description="System prompt for the agent")
+    model: str = Field("gpt-4", description="Default model to use")
+    tools: List[ToolAssignment] = Field(default_factory=list, description="Assigned tools")
+    mcp_servers: List[MCPServerConfig] = Field(default_factory=list, description="MCP servers to install")
+    tags: List[str] = Field(default_factory=list, description="Search tags")
+    version: str = Field("1.0.0", description="Template version")
+    author: Optional[str] = Field(None, description="Template author")
+    icon: Optional[str] = Field(None, description="Icon URL or emoji")
+    is_builtin: bool = Field(True, description="Whether this is a built-in template")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert template to dictionary."""
+        return self.dict()
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Create template from dictionary."""
+        return cls(**data)
+
+
+class AgentTemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Provides methods to list, search, get, and install agent templates
+    along with their MCP servers.
+    """
+
+    def __init__(self, templates_dir: Optional[Path] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        self._templates_dir = templates_dir or Path(__file__).parent / "templates"
+        self._load_builtin_templates()
+        if self._templates_dir.exists():
+            self._load_custom_templates()
+
+    def _load_builtin_templates(self):
+        """Load built-in templates from the predefined catalog."""
+        builtin_templates = self._get_builtin_templates()
+        for template in builtin_templates:
+            self._templates[template.id] = template
+
+    def _load_custom_templates(self):
+        """Load custom templates from the templates directory."""
+        if not self._templates_dir.exists():
+            return
+        for file_path in self._templates_dir.glob("*.{json,yaml,yml}"):
+            try:
+                with open(file_path, "r") as f:
+                    if file_path.suffix == ".json":
+                        data = json.load(f)
+                    else:
+                        data = yaml.safe_load(f)
+                if isinstance(data, list):
+                    for item in data:
+                        template = AgentTemplate.from_dict(item)
+                        self._templates[template.id] = template
+                elif isinstance(data, dict):
+                    template = AgentTemplate.from_dict(data)
+                    self._templates[template.id] = template
+            except Exception as e:
+                logger.warning(f"Failed to load template from {file_path}: {e}")
+
+    def _get_builtin_templates(self) -> List[AgentTemplate]:
+        """Return the list of built-in agent templates."""
+        return [
+            AgentTemplate(
+                id="coding-assistant",
+                name="Coding Assistant",
+                description="A general-purpose coding assistant with code generation, review, and debugging capabilities.",
+                category=AgentCategory.CODING,
+                system_prompt="You are an expert software engineer. Help users write, review, and debug code. "
+                              "Provide clear explanations and best practices. When writing code, ensure it is "
+                              "production-ready, well-documented, and follows language-specific conventions.",
+                model="gpt-4",
+                tools=[
+                    ToolAssignment(tool_name="code_generator", description="Generate code snippets"),
+                    ToolAssignment(tool_name="code_reviewer", description="Review code for issues"),
+                    ToolAssignment(tool_name="debugger", description="Debug code problems"),
+                ],
+                mcp_servers=[
+                    MCPServerConfig(name="github", url="https://github.com/modelcontextprotocol/servers"),
+                    MCPServerConfig(name="filesystem", package="@modelcontextprotocol/server-filesystem"),
+                ],
+                tags=["coding", "development", "debugging", "code review"],
+                icon="💻",
+            ),
+            AgentTemplate(
+                id="data-analyst",
+                name="Data Analyst",
+                description="Analyze data, create visualizations, and generate insights from datasets.",
+                category=AgentCategory.DATA_ANALYSIS,
+                system_prompt="You are a skilled data analyst. Help users explore, analyze, and visualize data. "
+                              "Provide statistical insights, create clear visualizations, and explain findings in "
+                              "an accessible manner. Always validate data quality before analysis.",
+                model="gpt-4",
+                tools=[
+                    ToolAssignment(tool_name="data_loader", description="Load data from various sources"),
+                    ToolAssignment(tool_name="data_visualizer", description="Create charts and graphs"),
+                    ToolAssignment(tool_name="statistical_analyzer", description="Perform statistical analysis"),
+                ],
+                mcp_servers=[
+                    MCPServerConfig(name="sqlite", package="@modelcontextprotocol/server-sqlite"),
+                    MCPServerConfig(name="filesystem", package="@modelcontextprotocol/server-filesystem"),
+                ],
+                tags=["data", "analysis", "visualization", "statistics"],
+                icon="📊",
+            ),
+            AgentTemplate(
+                id="research-assistant",
+                name="Research Assistant",
+                description="Conduct research, summarize papers, and gather information from multiple sources.",
+                category=AgentCategory.RESEARCH,
+                system_prompt="You are a thorough research assistant. Help users find, evaluate, and synthesize "
+                              "information from various sources. Provide well-cited summaries, identify key findings, "
+                              "and highlight areas of uncertainty or debate.",
+                model="gpt-4",
+                tools=[
+                    ToolAssignment(tool_name="web_searcher", description="Search the web for information"),
+                    ToolAssignment(tool_name="document_summarizer", description="Summarize documents and papers"),
+                    ToolAssignment(tool_name="citation_manager", description="Manage citations and references"),
+                ],
+                mcp_servers=[
+                    MCPServerConfig(name="brave-search", package="@anthropic/mcp-server-brave-search"),
+                    MCPServerConfig(name="filesystem", package="@modelcontextprotocol/server-filesystem"),
+                ],
+                tags=["research", "summarization", "information gathering"],
+                icon="🔬",
+            ),
+            AgentTemplate(
+                id="customer-support",
+                name="Customer Support Agent",
+                description="Handle customer inquiries, troubleshoot issues, and provide product support.",
+                category=AgentCategory.CUSTOMER_SUPPORT,
+                system_prompt="You are a helpful customer support agent. Assist users with their questions and "
+                              "issues in a friendly, professional manner.
