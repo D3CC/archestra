@@ -1,0 +1,265 @@
+```python
+# archestra/agents/template_catalog.py
+
+"""
+Agent Template Catalog - Quickstart pre-built agent templates.
+
+This module provides a catalog of pre-built agent templates that allow users
+to spin up fully-configured agents (system prompt, model, tool assignments)
+and install the agent's MCP servers in a single click.
+
+Usage:
+    from archestra.agents.template_catalog import TemplateCatalog
+    catalog = TemplateCatalog()
+    template = catalog.get_template("research-assistant")
+    agent = template.instantiate()
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+from archestra.agents.base import AgentConfig
+from archestra.agents.mcp import MCPServerConfig, install_mcp_server
+from archestra.core.exceptions import TemplateNotFoundError, TemplateValidationError
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AgentTemplate:
+    """Represents a pre-built agent template."""
+
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        """Validate template fields."""
+        if not self.id or not self.id.strip():
+            raise TemplateValidationError("Template 'id' is required and cannot be empty.")
+        if not self.name:
+            raise TemplateValidationError("Template 'name' is required.")
+        if not self.system_prompt:
+            raise TemplateValidationError("Template 'system_prompt' is required.")
+        if not self.model:
+            raise TemplateValidationError("Template 'model' is required.")
+
+    def to_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig for agent instantiation."""
+        return AgentConfig(
+            system_prompt=self.system_prompt,
+            model=self.model,
+            tools=self.tools,
+            mcp_servers=self.mcp_servers,
+        )
+
+    def instantiate(self) -> "Agent":
+        """
+        Create an agent instance from this template.
+
+        Returns:
+            Agent: A fully configured agent ready for use.
+
+        Raises:
+            TemplateValidationError: If template data is invalid.
+        """
+        from archestra.agents.agent import Agent  # lazy import to avoid circular
+
+        self.validate()
+        config = self.to_agent_config()
+        agent = Agent(config=config)
+        # Install MCP servers if any
+        for mcp_config in self.mcp_servers:
+            install_mcp_server(mcp_config)
+        return agent
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize template to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize dictionary to template."""
+        mcp_servers = [MCPServerConfig(**s) for s in data.pop("mcp_servers", [])]
+        return cls(mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Template Catalog
+# ---------------------------------------------------------------------------
+
+
+class TemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Templates can be loaded from a directory of YAML/JSON files or registered
+    programmatically.
+    """
+
+    def __init__(self, templates_dir: Optional[Path] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        if templates_dir is not None:
+            self.load_from_directory(templates_dir)
+        else:
+            self._load_builtin_templates()
+
+    # ------------------------------------------------------------------
+    # Built-in templates
+    # ------------------------------------------------------------------
+
+    def _load_builtin_templates(self) -> None:
+        """Load the default set of built-in templates."""
+        builtins = [
+            AgentTemplate(
+                id="research-assistant",
+                name="Research Assistant",
+                description="An agent that helps with web research and summarization.",
+                system_prompt="You are a research assistant. Help the user find and summarize "
+                              "information from the web. Be concise and cite sources.",
+                model="gpt-4",
+                tools=["web_search", "web_scrape"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="web-search",
+                        command="npx",
+                        args=["@archestra/mcp-web-search"],
+                        env={"SEARCH_API_KEY": ""},
+                    )
+                ],
+                metadata={"category": "productivity", "difficulty": "beginner"},
+            ),
+            AgentTemplate(
+                id="code-reviewer",
+                name="Code Reviewer",
+                description="An agent that reviews code for bugs, style, and security issues.",
+                system_prompt="You are a senior code reviewer. Analyze the provided code for bugs, "
+                              "style violations, and security vulnerabilities. Provide actionable feedback.",
+                model="gpt-4",
+                tools=["code_analysis", "security_scan"],
+                mcp_servers=[
+                    MCPServerConfig(
+                        name="code-analyzer",
+                        command="docker",
+                        args=["run", "--rm", "archestra/mcp-code-analyzer"],
+                    )
+                ],
+                metadata={"category": "development", "difficulty": "intermediate"},
+            ),
+            AgentTemplate(
+                id="customer-support",
+                name="Customer Support Agent",
+                description="Handles common customer inquiries and ticket routing.",
+                system_prompt="You are a customer support agent. Be polite, empathetic, and helpful. "
+                              "Route complex issues to a human agent.",
+                model="gpt-3.5-turbo",
+                tools=["ticket_system", "knowledge_base"],
+                mcp_servers=[],
+                metadata={"category": "business", "difficulty": "beginner"},
+            ),
+        ]
+        for tmpl in builtins:
+            self.register(tmpl)
+
+    # ------------------------------------------------------------------
+    # Registration & lookup
+    # ------------------------------------------------------------------
+
+    def register(self, template: AgentTemplate) -> None:
+        """Register a template in the catalog."""
+        template.validate()
+        self._templates[template.id] = template
+        logger.info("Registered template '%s'", template.id)
+
+    def get_template(self, template_id: str) -> AgentTemplate:
+        """
+        Retrieve a template by its ID.
+
+        Raises:
+            TemplateNotFoundError: If template_id is not found.
+        """
+        if template_id not in self._templates:
+            raise TemplateNotFoundError(f"Template '{template_id}' not found in catalog.")
+        return self._templates[template_id]
+
+    def list_templates(self) -> List[Dict[str, Any]]:
+        """Return a list of all template summaries."""
+        return [
+            {
+                "id": t.id,
+                "name": t.name,
+                "description": t.description,
+                "model": t.model,
+                "tool_count": len(t.tools),
+                "mcp_count": len(t.mcp_servers),
+                "metadata": t.metadata,
+            }
+            for t in self._templates.values()
+        ]
+
+    def remove_template(self, template_id: str) -> None:
+        """Remove a template from the catalog."""
+        if template_id in self._templates:
+            del self._templates[template_id]
+            logger.info("Removed template '%s'", template_id)
+
+    # ------------------------------------------------------------------
+    # File-based loading
+    # ------------------------------------------------------------------
+
+    def load_from_directory(self, directory: Path) -> None:
+        """
+        Load all YAML/JSON template files from a directory.
+
+        Each file should contain a single template definition.
+        """
+        if not directory.is_dir():
+            raise NotADirectoryError(f"Templates directory '{directory}' does not exist.")
+
+        for file_path in sorted(directory.iterdir()):
+            if file_path.suffix in (".yaml", ".yml", ".json"):
+                try:
+                    template = self._load_template_file(file_path)
+                    self.register(template)
+                except Exception as e:
+                    logger.warning("Failed to load template from '%s': %s", file_path, e)
+
+    def _load_template_file(self, file_path: Path) -> AgentTemplate:
+        """Load a single template from a file."""
+        with open(file_path, "r", encoding="utf-8") as f:
+            if file_path.suffix == ".json":
+                data = json.load(f)
+            else:
+                data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            raise TemplateValidationError(f"Template file '{file_path}' must contain a dictionary.")
+        return AgentTemplate.from_dict(data)
+
+    def save_template_to_file(self, template_id: str, directory: Path) -> Path:
+        """
+        Save a template to a YAML file in the given directory.
+
+        Returns:
+            Path to the saved file.
+        """
+        template = self.get_template(template_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        file_path = directory / f"{template.id}.yaml"
+        with open(file_path, "w", encoding="utf-8") as f:
+            yaml.dump(template.to_dict(), f, default_flow_style=False
