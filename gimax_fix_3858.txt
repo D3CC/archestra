@@ -1,0 +1,224 @@
+```python
+# archestra/agents/template_catalog.py
+"""
+Agent template catalog module for quickstart agent deployment.
+Provides pre-built agent templates with system prompts, models, tool assignments,
+and MCP server installation in a single click.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import yaml
+from pydantic import BaseModel, Field, validator
+
+from archestra.agents.base import AgentConfig
+from archestra.mcp.server import MCPServerConfig
+from archestra.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+class TemplateMetadata(BaseModel):
+    """Metadata for an agent template."""
+    name: str = Field(..., description="Unique template name")
+    version: str = Field(default="1.0.0", description="Semantic version")
+    description: str = Field(default="", description="Human-readable description")
+    author: str = Field(default="Archestra AI", description="Template author")
+    tags: List[str] = Field(default_factory=list, description="Searchable tags")
+    category: str = Field(default="general", description="Template category")
+
+    @validator("name")
+    def name_must_be_valid(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Template name cannot be empty")
+        return v.strip()
+
+
+class TemplateToolAssignment(BaseModel):
+    """Tool assignment within a template."""
+    tool_name: str = Field(..., description="Registered tool name")
+    enabled: bool = Field(default=True, description="Whether tool is active by default")
+    config_overrides: Dict[str, Any] = Field(default_factory=dict, description="Tool-specific overrides")
+
+
+class TemplateMCPConfig(BaseModel):
+    """MCP server configuration for template."""
+    server_name: str = Field(..., description="MCP server name")
+    package: str = Field(..., description="Installable package (pip/npm)")
+    version: Optional[str] = Field(default=None, description="Package version constraint")
+    env_vars: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
+    auto_install: bool = Field(default=True, description="Install on agent creation")
+
+
+class AgentTemplate(BaseModel):
+    """Complete agent template definition."""
+    metadata: TemplateMetadata
+    system_prompt: str = Field(..., description="System prompt for the agent")
+    model: str = Field(default="gpt-4", description="Default model identifier")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Model temperature")
+    max_tokens: int = Field(default=2048, ge=1, description="Max tokens per response")
+    tools: List[TemplateToolAssignment] = Field(default_factory=list, description="Pre-configured tools")
+    mcp_servers: List[TemplateMCPConfig] = Field(default_factory=list, description="MCP servers to install")
+    extra_config: Dict[str, Any] = Field(default_factory=dict, description="Additional agent config")
+
+    def to_agent_config(self) -> AgentConfig:
+        """Convert template to an AgentConfig for agent creation."""
+        tool_names = [t.tool_name for t in self.tools if t.enabled]
+        return AgentConfig(
+            system_prompt=self.system_prompt,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            tools=tool_names,
+            extra=self.extra_config,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary."""
+        return json.loads(self.model_dump_json())
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        """Deserialize from dictionary."""
+        return cls.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# Template Catalog
+# ---------------------------------------------------------------------------
+
+class TemplateCatalog:
+    """
+    Manages a collection of agent templates.
+    Supports loading from files, registering, and deploying agents from templates.
+    """
+
+    def __init__(self, storage_path: Optional[Path] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        self._storage_path = storage_path or Path.home() / ".archestra" / "templates"
+        self._storage_path.mkdir(parents=True, exist_ok=True)
+
+    # ---- Registration ----
+
+    def register(self, template: AgentTemplate) -> None:
+        """Register a template in the catalog."""
+        name = template.metadata.name
+        if name in self._templates:
+            logger.warning(f"Overwriting existing template: {name}")
+        self._templates[name] = template
+        logger.info(f"Registered template: {name} v{template.metadata.version}")
+
+    def unregister(self, name: str) -> bool:
+        """Remove a template from the catalog. Returns True if removed."""
+        if name in self._templates:
+            del self._templates[name]
+            logger.info(f"Unregistered template: {name}")
+            return True
+        logger.warning(f"Template not found: {name}")
+        return False
+
+    def get(self, name: str) -> Optional[AgentTemplate]:
+        """Get a template by name."""
+        return self._templates.get(name)
+
+    def list_templates(self, category: Optional[str] = None, tag: Optional[str] = None) -> List[AgentTemplate]:
+        """List templates, optionally filtered by category or tag."""
+        results = list(self._templates.values())
+        if category:
+            results = [t for t in results if t.metadata.category == category]
+        if tag:
+            results = [t for t in results if tag in t.metadata.tags]
+        return results
+
+    # ---- Persistence ----
+
+    def save(self, name: Optional[str] = None) -> None:
+        """Save template(s) to disk as JSON files."""
+        if name:
+            template = self._templates.get(name)
+            if not template:
+                raise KeyError(f"Template '{name}' not found")
+            self._save_single(template)
+        else:
+            for template in self._templates.values():
+                self._save_single(template)
+
+    def _save_single(self, template: AgentTemplate) -> None:
+        """Save a single template to a JSON file."""
+        file_path = self._storage_path / f"{template.metadata.name}.json"
+        with open(file_path, "w") as f:
+            json.dump(template.to_dict(), f, indent=2)
+        logger.debug(f"Saved template to {file_path}")
+
+    def load(self, name: str) -> Optional[AgentTemplate]:
+        """Load a single template from disk."""
+        file_path = self._storage_path / f"{name}.json"
+        if not file_path.exists():
+            logger.warning(f"Template file not found: {file_path}")
+            return None
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        template = AgentTemplate.from_dict(data)
+        self._templates[template.metadata.name] = template
+        return template
+
+    def load_all(self) -> List[AgentTemplate]:
+        """Load all templates from the storage directory."""
+        loaded = []
+        for file_path in self._storage_path.glob("*.json"):
+            try:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
+                template = AgentTemplate.from_dict(data)
+                self._templates[template.metadata.name] = template
+                loaded.append(template)
+            except Exception as e:
+                logger.error(f"Failed to load template from {file_path}: {e}")
+        return loaded
+
+    # ---- Deployment ----
+
+    def deploy_agent(self, template_name: str, tool_registry: ToolRegistry, **overrides: Any) -> AgentConfig:
+        """
+        Create an AgentConfig from a template, ready for agent instantiation.
+        Also installs MCP servers if configured.
+        """
+        template = self.get(template_name)
+        if not template:
+            raise ValueError(f"Template '{template_name}' not found in catalog")
+
+        # Apply overrides
+        config = template.to_agent_config()
+        for key, value in overrides.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+            else:
+                config.extra[key] = value
+
+        # Install MCP servers
+        for mcp in template.mcp_servers:
+            if mcp.auto_install:
+                self._install_mcp_server(mcp)
+
+        # Validate tools exist in registry
+        for tool_name in config.tools:
+            if not tool_registry.has(tool_name):
+                logger.warning(f"Tool '{tool_name}' not in registry, will be skipped at runtime")
+
+        logger.info(f"Deployed agent config from template '{template_name}'")
+        return config
+
+    def _install_mcp_server(self, mcp_config: TemplateMCPConfig) -> None:
+        """Install an MCP server package (simulated)."""
+        # In production, this would call pip/npm install
+        logger.info(f"Installing MCP server: {mcp_config.server_name} ({mcp_config.package})")
+        # Placeholder
