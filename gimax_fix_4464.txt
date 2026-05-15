@@ -1,0 +1,303 @@
+```python
+# archestra/models/mixins/soft_delete.py
+"""
+Soft delete mixin for all models.
+Provides a generic way to mark records as deleted instead of hard deleting them.
+"""
+from datetime import datetime, timezone
+from typing import Optional
+from sqlalchemy import DateTime, Boolean, event
+from sqlalchemy.orm import declared_attr, Query
+from sqlalchemy.ext.hybrid import hybrid_property
+from archestra.extensions import db
+
+
+class SoftDeleteMixin:
+    """
+    Mixin that adds soft delete capability to any model.
+    Automatically filters out deleted records in queries.
+    """
+    __soft_delete_enabled__ = True  # Can be overridden per model to disable
+
+    @declared_attr
+    def deleted_at(cls):
+        return db.Column(DateTime(timezone=True), nullable=True, default=None)
+
+    @declared_attr
+    def is_deleted(cls):
+        return db.Column(Boolean, default=False, nullable=False, index=True)
+
+    @hybrid_property
+    def deleted(self):
+        return self.is_deleted
+
+    @deleted.setter
+    def deleted(self, value: bool):
+        self.is_deleted = value
+        if value:
+            self.deleted_at = datetime.now(timezone.utc)
+        else:
+            self.deleted_at = None
+
+    def soft_delete(self, commit: bool = True):
+        """Mark the record as deleted."""
+        self.deleted = True
+        if commit:
+            db.session.commit()
+
+    def restore(self, commit: bool = True):
+        """Restore a soft-deleted record."""
+        self.deleted = False
+        if commit:
+            db.session.commit()
+
+    @classmethod
+    def query(cls):
+        """Override default query to exclude soft-deleted records."""
+        if cls.__soft_delete_enabled__:
+            return db.session.query(cls).filter(cls.is_deleted == False)
+        return db.session.query(cls)
+
+    @classmethod
+    def query_with_deleted(cls):
+        """Query including soft-deleted records."""
+        return db.session.query(cls)
+
+    @classmethod
+    def query_deleted_only(cls):
+        """Query only soft-deleted records."""
+        return db.session.query(cls).filter(cls.is_deleted == True)
+
+
+# archestra/models/mixins/__init__.py
+from .soft_delete import SoftDeleteMixin
+
+__all__ = ['SoftDeleteMixin']
+
+
+# archestra/models/base.py
+"""
+Base model class with soft delete support.
+"""
+from archestra.extensions import db
+from archestra.models.mixins import SoftDeleteMixin
+
+
+class BaseModel(SoftDeleteMixin, db.Model):
+    """
+    Abstract base model for all database models.
+    Provides soft delete, timestamps, and common utilities.
+    """
+    __abstract__ = True
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    created_at = db.Column(DateTime(timezone=True), default=datetime.now(timezone.utc), nullable=False)
+    updated_at = db.Column(DateTime(timezone=True), default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
+
+    def save(self, commit: bool = True):
+        """Save the model instance."""
+        db.session.add(self)
+        if commit:
+            db.session.commit()
+        return self
+
+    def delete(self, commit: bool = True):
+        """Soft delete by default, hard delete if soft delete is disabled."""
+        if self.__soft_delete_enabled__:
+            self.soft_delete(commit=commit)
+        else:
+            db.session.delete(self)
+            if commit:
+                db.session.commit()
+
+    def to_dict(self) -> dict:
+        """Convert model to dictionary."""
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+
+
+# archestra/extensions.py
+from flask_sqlalchemy import SQLAlchemy
+
+db = SQLAlchemy()
+
+
+# archestra/app.py (partial - showing initialization)
+from flask import Flask
+from archestra.extensions import db
+from archestra.models.base import BaseModel
+
+def create_app():
+    app = Flask(__name__)
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+    db.init_app(app)
+
+    with app.app_context():
+        db.create_all()
+
+    return app
+
+
+# tests/test_soft_delete.py
+"""
+Tests for soft delete functionality.
+"""
+import pytest
+from datetime import datetime, timezone
+from archestra.extensions import db
+from archestra.models.base import BaseModel
+
+
+class SoftDeleteModel(BaseModel):
+    """Test model with soft delete enabled."""
+    __tablename__ = 'soft_delete_test'
+    name = db.Column(db.String(100), nullable=False)
+
+
+class HardDeleteModel(BaseModel):
+    """Test model with soft delete disabled."""
+    __tablename__ = 'hard_delete_test'
+    __soft_delete_enabled__ = False
+    name = db.Column(db.String(100), nullable=False)
+
+
+@pytest.fixture(autouse=True)
+def setup_db(app):
+    """Create tables for each test."""
+    with app.app_context():
+        db.create_all()
+        yield
+        db.drop_all()
+
+
+def test_soft_delete_marks_as_deleted(app):
+    """Test that soft delete sets is_deleted and deleted_at."""
+    with app.app_context():
+        obj = SoftDeleteModel(name='test')
+        obj.save()
+
+        obj.soft_delete()
+        assert obj.is_deleted == True
+        assert obj.deleted_at is not None
+        assert obj.deleted == True
+
+
+def test_soft_delete_excludes_from_query(app):
+    """Test that default query excludes soft-deleted records."""
+    with app.app_context():
+        obj1 = SoftDeleteModel(name='active')
+        obj2 = SoftDeleteModel(name='deleted')
+        obj1.save()
+        obj2.save()
+        obj2.soft_delete()
+
+        results = SoftDeleteModel.query().all()
+        assert len(results) == 1
+        assert results[0].name == 'active'
+
+
+def test_query_with_deleted_includes_all(app):
+    """Test that query_with_deleted includes soft-deleted records."""
+    with app.app_context():
+        obj1 = SoftDeleteModel(name='active')
+        obj2 = SoftDeleteModel(name='deleted')
+        obj1.save()
+        obj2.save()
+        obj2.soft_delete()
+
+        results = SoftDeleteModel.query_with_deleted().all()
+        assert len(results) == 2
+
+
+def test_query_deleted_only(app):
+    """Test that query_deleted_only returns only deleted records."""
+    with app.app_context():
+        obj1 = SoftDeleteModel(name='active')
+        obj2 = SoftDeleteModel(name='deleted')
+        obj1.save()
+        obj2.save()
+        obj2.soft_delete()
+
+        results = SoftDeleteModel.query_deleted_only().all()
+        assert len(results) == 1
+        assert results[0].name == 'deleted'
+
+
+def test_restore_soft_deleted(app):
+    """Test that restore clears soft delete flags."""
+    with app.app_context():
+        obj = SoftDeleteModel(name='test')
+        obj.save()
+        obj.soft_delete()
+        assert obj.is_deleted == True
+
+        obj.restore()
+        assert obj.is_deleted == False
+        assert obj.deleted_at is None
+        assert obj.deleted == False
+
+
+def test_delete_method_soft_deletes(app):
+    """Test that delete() method performs soft delete."""
+    with app.app_context():
+        obj = SoftDeleteModel(name='test')
+        obj.save()
+        obj.delete()
+
+        assert obj.is_deleted == True
+        assert obj.deleted_at is not None
+
+
+def test_hard_delete_model(app):
+    """Test that models with soft delete disabled are hard deleted."""
+    with app.app_context():
+        obj = HardDeleteModel(name='test')
+        obj.save()
+        obj_id = obj.id
+        obj.delete()
+
+        # Should be completely removed from database
+        result = HardDeleteModel.query_with_deleted().get(obj_id)
+        assert result is None
+
+
+def test_soft_delete_via_base_delete(app):
+    """Test that BaseModel.delete() uses soft delete when enabled."""
+    with app.app_context():
+        obj = SoftDeleteModel(name='test')
+        obj.save()
+        obj_id = obj.id
+
+        obj.delete()
+
+        # Should still exist in database but marked as deleted
+        result = SoftDeleteModel.query_with_deleted().get(obj_id)
+        assert result is not None
+        assert result.is_deleted == True
+
+
+def test_to_dict_excludes_deleted_flag_by_default(app):
+    """Test that to_dict includes all columns including soft delete fields."""
+    with app.app_context():
+        obj = SoftDeleteModel(name='test')
+        obj.save()
+        d = obj.to_dict()
+        assert 'is_deleted' in d
+        assert 'deleted_at' in d
+        assert d['is_deleted'] == False
+        assert d['deleted_at'] is None
+
+
+def test_soft_delete_disabled_per_model(app):
+    """Test that __soft_delete_enabled__ = False works."""
+    with app.app_context():
+        obj = HardDeleteModel(name='test')
+        obj.save()
+        obj_id = obj.id
+
+        # Should not have soft delete columns
+        assert not hasattr(obj, 'is_deleted') or obj.is_deleted == False
+
+        obj.delete()
+       
