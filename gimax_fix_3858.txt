@@ -1,0 +1,266 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+import { z } from 'zod';
+import { AgentConfig, AgentTemplate, MCPConfig } from '../types/agent';
+import { logger } from '../utils/logger';
+
+/**
+ * Schema for validating agent template definitions
+ */
+const AgentTemplateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().min(1),
+  category: z.enum(['customer-support', 'data-analysis', 'automation', 'development', 'research']),
+  systemPrompt: z.string().min(1),
+  model: z.string().min(1),
+  tools: z.array(z.string()).default([]),
+  mcpServers: z.array(z.object({
+    name: z.string().min(1),
+    url: z.string().url(),
+    description: z.string().optional(),
+  })).default([]),
+  tags: z.array(z.string()).default([]),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+});
+
+/**
+ * Pre-built agent templates catalog
+ */
+export class AgentTemplateCatalog {
+  private templates: Map<string, AgentTemplate> = new Map();
+  private static instance: AgentTemplateCatalog;
+
+  private constructor() {
+    this.initializeDefaultTemplates();
+  }
+
+  /**
+   * Get singleton instance
+   */
+  static getInstance(): AgentTemplateCatalog {
+    if (!AgentTemplateCatalog.instance) {
+      AgentTemplateCatalog.instance = new AgentTemplateCatalog();
+    }
+    return AgentTemplateCatalog.instance;
+  }
+
+  /**
+   * Initialize default templates
+   */
+  private initializeDefaultTemplates(): void {
+    const defaultTemplates: AgentTemplate[] = [
+      {
+        id: 'customer-support-basic',
+        name: 'Basic Customer Support Agent',
+        description: 'Handles common customer inquiries with predefined responses and escalation paths',
+        category: 'customer-support',
+        systemPrompt: `You are a helpful customer support agent. Your role is to:
+1. Greet customers warmly and identify their needs
+2. Provide accurate information about products/services
+3. Troubleshoot common issues using available tools
+4. Escalate complex issues to human agents
+5. Always maintain a professional and empathetic tone
+
+Available tools: ticket management, knowledge base search, order lookup`,
+        model: 'gpt-4',
+        tools: ['ticket-manager', 'knowledge-base', 'order-lookup'],
+        mcpServers: [
+          {
+            name: 'ticket-system',
+            url: 'https://mcp.example.com/ticket-system',
+            description: 'Ticket management MCP server',
+          },
+        ],
+        tags: ['customer-support', 'basic', 'ticketing'],
+        version: '1.0.0',
+      },
+      {
+        id: 'data-analyst-pro',
+        name: 'Pro Data Analyst Agent',
+        description: 'Advanced data analysis agent with SQL, visualization, and reporting capabilities',
+        category: 'data-analysis',
+        systemPrompt: `You are an expert data analyst. Your capabilities include:
+1. Writing and executing SQL queries
+2. Creating data visualizations
+3. Statistical analysis and modeling
+4. Generating comprehensive reports
+5. Data cleaning and preprocessing
+
+Always validate data quality before analysis and explain your methodology.`,
+        model: 'gpt-4-turbo',
+        tools: ['sql-executor', 'chart-generator', 'statistical-analyzer', 'report-builder'],
+        mcpServers: [
+          {
+            name: 'database-connector',
+            url: 'https://mcp.example.com/db-connector',
+            description: 'Database connection MCP server',
+          },
+          {
+            name: 'visualization-engine',
+            url: 'https://mcp.example.com/viz-engine',
+            description: 'Data visualization MCP server',
+          },
+        ],
+        tags: ['data-analysis', 'sql', 'visualization', 'reporting'],
+        version: '2.1.0',
+      },
+      {
+        id: 'automation-workflow',
+        name: 'Workflow Automation Agent',
+        description: 'Automates repetitive tasks and orchestrates complex workflows',
+        category: 'automation',
+        systemPrompt: `You are a workflow automation specialist. Your responsibilities:
+1. Design and implement automated workflows
+2. Integrate with various APIs and services
+3. Monitor and optimize automation processes
+4. Handle error conditions gracefully
+5. Provide detailed execution logs
+
+Focus on efficiency and reliability in all automation tasks.`,
+        model: 'gpt-4',
+        tools: ['workflow-builder', 'api-connector', 'scheduler', 'monitoring-dashboard'],
+        mcpServers: [
+          {
+            name: 'workflow-engine',
+            url: 'https://mcp.example.com/workflow-engine',
+            description: 'Workflow orchestration MCP server',
+          },
+        ],
+        tags: ['automation', 'workflow', 'integration'],
+        version: '1.2.0',
+      },
+      {
+        id: 'code-reviewer',
+        name: 'Code Review Assistant',
+        description: 'Reviews code changes for quality, security, and best practices',
+        category: 'development',
+        systemPrompt: `You are an expert code reviewer. Your review process:
+1. Analyze code for bugs and potential issues
+2. Check adherence to coding standards
+3. Identify security vulnerabilities
+4. Suggest performance improvements
+5. Provide constructive feedback
+
+Be thorough but respectful in your reviews.`,
+        model: 'gpt-4-turbo',
+        tools: ['static-analyzer', 'security-scanner', 'performance-profiler', 'git-integration'],
+        mcpServers: [
+          {
+            name: 'code-analysis',
+            url: 'https://mcp.example.com/code-analysis',
+            description: 'Code analysis MCP server',
+          },
+        ],
+        tags: ['development', 'code-review', 'security', 'quality'],
+        version: '1.0.0',
+      },
+      {
+        id: 'research-assistant',
+        name: 'Research Assistant Agent',
+        description: 'Helps with literature review, data collection, and research synthesis',
+        category: 'research',
+        systemPrompt: `You are a research assistant. Your capabilities:
+1. Search and summarize academic papers
+2. Collect and organize research data
+3. Generate literature reviews
+4. Suggest research methodologies
+5. Format citations and references
+
+Maintain academic rigor and cite all sources properly.`,
+        model: 'gpt-4',
+        tools: ['paper-search', 'citation-manager', 'data-collector', 'literature-analyzer'],
+        mcpServers: [
+          {
+            name: 'academic-db',
+            url: 'https://mcp.example.com/academic-db',
+            description: 'Academic database MCP server',
+          },
+        ],
+        tags: ['research', 'academic', 'literature-review'],
+        version: '1.1.0',
+      },
+    ];
+
+    defaultTemplates.forEach(template => {
+      this.registerTemplate(template);
+    });
+  }
+
+  /**
+   * Register a new agent template
+   */
+  registerTemplate(template: AgentTemplate): void {
+    const validationResult = AgentTemplateSchema.safeParse(template);
+    if (!validationResult.success) {
+      logger.error('Invalid agent template:', validationResult.error);
+      throw new Error(`Invalid template: ${validationResult.error.message}`);
+    }
+
+    if (this.templates.has(template.id)) {
+      logger.warn(`Template ${template.id} already exists, overwriting`);
+    }
+
+    this.templates.set(template.id, template);
+    logger.info(`Registered template: ${template.id} (${template.name})`);
+  }
+
+  /**
+   * Get a template by ID
+   */
+  getTemplate(id: string): AgentTemplate | undefined {
+    return this.templates.get(id);
+  }
+
+  /**
+   * List all available templates
+   */
+  listTemplates(category?: string): AgentTemplate[] {
+    const allTemplates = Array.from(this.templates.values());
+    if (category) {
+      return allTemplates.filter(t => t.category === category);
+    }
+    return allTemplates;
+  }
+
+  /**
+   * Search templates by keyword
+   */
+  searchTemplates(query: string): AgentTemplate[] {
+    const lowerQuery = query.toLowerCase();
+    return Array.from(this.templates.values()).filter(template => {
+      return (
+        template.name.toLowerCase().includes(lowerQuery) ||
+        template.description.toLowerCase().includes(lowerQuery) ||
+        template.tags.some(tag => tag.toLowerCase().includes(lowerQuery))
+      );
+    });
+  }
+
+  /**
+   * Create an agent configuration from a template
+   */
+  createAgentFromTemplate(templateId: string, overrides?: Partial<AgentConfig>): AgentConfig {
+    const template = this.getTemplate(templateId);
+    if (!template) {
+      throw new Error(`Template ${templateId} not found`);
+    }
+
+    const agentConfig: AgentConfig = {
+      systemPrompt: template.systemPrompt,
+      model: template.model,
+      tools: [...template.tools],
+      mcpServers: template.mcpServers.map(server => ({
+        name: server.name,
+        url: server.url,
+        config: {},
+      })),
+      ...overrides,
+    };
+
+    logger.info(`Created agent config from template: ${templateId}`);
+    return agentConfig;
+  }
+
+  /**
+   * Install MCP servers for a
