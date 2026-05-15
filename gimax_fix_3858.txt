@@ -1,0 +1,234 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+import { z } from 'zod';
+import { AgentConfig, AgentTemplate, MCPConfig } from '../types/agent';
+import { logger } from '../utils/logger';
+
+// Schema definitions
+const MCPServerSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  auth: z.object({
+    type: z.enum(['none', 'bearer', 'api-key']),
+    credentials: z.record(z.string()).optional(),
+  }).optional(),
+});
+
+const AgentTemplateSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  description: z.string().max(500),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  category: z.enum(['customer-support', 'data-analysis', 'coding', 'general', 'research']),
+  systemPrompt: z.string().min(1),
+  model: z.string().min(1),
+  tools: z.array(z.string()),
+  mcpServers: z.array(MCPServerSchema),
+  tags: z.array(z.string()).optional(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+});
+
+export class AgentTemplateCatalog {
+  private templates: Map<string, AgentTemplate> = new Map();
+  private static instance: AgentTemplateCatalog;
+
+  private constructor() {
+    this.initializeDefaultTemplates();
+  }
+
+  static getInstance(): AgentTemplateCatalog {
+    if (!AgentTemplateCatalog.instance) {
+      AgentTemplateCatalog.instance = new AgentTemplateCatalog();
+    }
+    return AgentTemplateCatalog.instance;
+  }
+
+  private initializeDefaultTemplates(): void {
+    const defaultTemplates: AgentTemplate[] = [
+      {
+        id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+        name: 'Customer Support Agent',
+        description: 'Pre-built agent for handling customer inquiries with knowledge base and ticket system',
+        version: '1.0.0',
+        category: 'customer-support',
+        systemPrompt: `You are a helpful customer support agent. Your role is to:
+1. Greet customers warmly and professionally
+2. Understand their issues by asking clarifying questions
+3. Provide accurate solutions using the available tools
+4. Escalate complex issues when necessary
+5. Always maintain a polite and empathetic tone`,
+        model: 'gpt-4',
+        tools: ['knowledge-base-search', 'ticket-creator', 'sentiment-analyzer'],
+        mcpServers: [
+          {
+            name: 'knowledge-base',
+            url: 'https://mcp.knowledge-base.example.com',
+            auth: { type: 'bearer' },
+          },
+          {
+            name: 'ticketing',
+            url: 'https://mcp.ticketing.example.com',
+            auth: { type: 'api-key', credentials: { headerName: 'X-API-Key' } },
+          },
+        ],
+        tags: ['support', 'customer-service', 'helpdesk'],
+        createdAt: '2024-01-15T10:00:00Z',
+        updatedAt: '2024-01-15T10:00:00Z',
+      },
+      {
+        id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+        name: 'Data Analyst Agent',
+        description: 'Agent specialized in data analysis, visualization, and reporting',
+        version: '1.0.0',
+        category: 'data-analysis',
+        systemPrompt: `You are a data analysis expert. Your responsibilities include:
+1. Analyzing datasets to find patterns and insights
+2. Creating visualizations to communicate findings
+3. Generating comprehensive reports
+4. Explaining complex data concepts in simple terms
+5. Recommending data-driven decisions`,
+        model: 'gpt-4',
+        tools: ['sql-query', 'chart-generator', 'data-export', 'statistical-analysis'],
+        mcpServers: [
+          {
+            name: 'database',
+            url: 'https://mcp.database.example.com',
+            auth: { type: 'bearer' },
+          },
+          {
+            name: 'visualization',
+            url: 'https://mcp.viz.example.com',
+          },
+        ],
+        tags: ['analytics', 'data-science', 'reporting'],
+        createdAt: '2024-01-15T10:00:00Z',
+        updatedAt: '2024-01-15T10:00:00Z',
+      },
+      {
+        id: 'c3d4e5f6-a7b8-9012-cdef-123456789012',
+        name: 'Coding Assistant Agent',
+        description: 'AI pair programmer with code review and debugging capabilities',
+        version: '1.0.0',
+        category: 'coding',
+        systemPrompt: `You are an expert software engineer assistant. Your duties include:
+1. Writing clean, efficient, and well-documented code
+2. Reviewing code for bugs and improvements
+3. Debugging issues and suggesting fixes
+4. Explaining programming concepts clearly
+5. Following best practices and design patterns`,
+        model: 'gpt-4',
+        tools: ['code-executor', 'git-manager', 'dependency-checker', 'code-formatter'],
+        mcpServers: [
+          {
+            name: 'code-execution',
+            url: 'https://mcp.code-exec.example.com',
+            auth: { type: 'bearer' },
+          },
+          {
+            name: 'git-service',
+            url: 'https://mcp.git.example.com',
+            auth: { type: 'bearer' },
+          },
+        ],
+        tags: ['development', 'programming', 'code-review'],
+        createdAt: '2024-01-15T10:00:00Z',
+        updatedAt: '2024-01-15T10:00:00Z',
+      },
+    ];
+
+    defaultTemplates.forEach(template => {
+      this.templates.set(template.id, template);
+    });
+  }
+
+  async getTemplate(id: string): Promise<AgentTemplate | null> {
+    const template = this.templates.get(id);
+    if (!template) {
+      logger.warn(`Template not found: ${id}`);
+      return null;
+    }
+    return template;
+  }
+
+  async listTemplates(category?: string): Promise<AgentTemplate[]> {
+    const allTemplates = Array.from(this.templates.values());
+    if (category) {
+      return allTemplates.filter(t => t.category === category);
+    }
+    return allTemplates;
+  }
+
+  async searchTemplates(query: string): Promise<AgentTemplate[]> {
+    const lowerQuery = query.toLowerCase();
+    return Array.from(this.templates.values()).filter(template => {
+      return (
+        template.name.toLowerCase().includes(lowerQuery) ||
+        template.description.toLowerCase().includes(lowerQuery) ||
+        template.tags?.some(tag => tag.toLowerCase().includes(lowerQuery))
+      );
+    });
+  }
+
+  async createAgentFromTemplate(
+    templateId: string,
+    overrides?: Partial<AgentConfig>
+  ): Promise<AgentConfig> {
+    const template = await this.getTemplate(templateId);
+    if (!template) {
+      throw new Error(`Template not found: ${templateId}`);
+    }
+
+    const agentConfig: AgentConfig = {
+      name: overrides?.name || template.name,
+      systemPrompt: overrides?.systemPrompt || template.systemPrompt,
+      model: overrides?.model || template.model,
+      tools: overrides?.tools || template.tools,
+      mcpServers: overrides?.mcpServers || template.mcpServers,
+      metadata: {
+        templateId: template.id,
+        templateVersion: template.version,
+        createdAt: new Date().toISOString(),
+      },
+    };
+
+    logger.info(`Agent created from template: ${template.name} (${templateId})`);
+    return agentConfig;
+  }
+
+  async installMCPServers(templateId: string): Promise<boolean> {
+    const template = await this.getTemplate(templateId);
+    if (!template) {
+      throw new Error(`Template not found: ${templateId}`);
+    }
+
+    try {
+      for (const server of template.mcpServers) {
+        logger.info(`Installing MCP server: ${server.name} at ${server.url}`);
+        // Simulate MCP server installation
+        await this.installMCPServer(server);
+      }
+      logger.info(`All MCP servers installed for template: ${template.name}`);
+      return true;
+    } catch (error) {
+      logger.error(`Failed to install MCP servers for template: ${template.name}`, error);
+      throw error;
+    }
+  }
+
+  private async installMCPServer(server: MCPConfig): Promise<void> {
+    // Simulate async installation process
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        logger.debug(`MCP server ${server.name} installed successfully`);
+        resolve();
+      }, 100);
+    });
+  }
+
+  async addTemplate(template: AgentTemplate): Promise<void> {
+    const validated = AgentTemplateSchema.parse(template);
+    if (this.templates.has(validated.id)) {
+      throw new Error(`Template with id ${validated.id} already exists`);
+    }
+    this.templates.set(valid
