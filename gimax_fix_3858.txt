@@ -1,0 +1,262 @@
+```python
+# archestra/agents/template_catalog.py
+
+"""
+Agent template catalog module for quickstart agent deployment.
+Provides a catalog of pre-built agent templates with system prompts,
+model configurations, tool assignments, and MCP server installation.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Optional, Any
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to be installed with the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    auto_start: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MCPServerConfig":
+        return cls(**data)
+
+
+@dataclass
+class AgentTemplate:
+    """
+    Pre-built agent template containing all configuration needed
+    to spin up a fully-configured agent.
+    """
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    temperature: float = 0.7
+    max_tokens: int = 2048
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = asdict(self)
+        result["mcp_servers"] = [s.to_dict() for s in self.mcp_servers]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        mcp_servers = [
+            MCPServerConfig.from_dict(s) for s in data.pop("mcp_servers", [])
+        ]
+        return cls(mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Built-in Catalog
+# ---------------------------------------------------------------------------
+
+class TemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+    Supports loading from built-in definitions and external JSON files.
+    """
+
+    def __init__(self, templates: Optional[Dict[str, AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = templates or {}
+        self._load_builtin()
+
+    def _load_builtin(self) -> None:
+        """Load built-in quickstart templates."""
+        builtin = _get_builtin_templates()
+        for tmpl in builtin:
+            if tmpl.id not in self._templates:
+                self._templates[tmpl.id] = tmpl
+
+    def get(self, template_id: str) -> Optional[AgentTemplate]:
+        """Retrieve a template by its ID."""
+        return self._templates.get(template_id)
+
+    def list_templates(self, tag: Optional[str] = None) -> List[AgentTemplate]:
+        """List all templates, optionally filtered by tag."""
+        if tag is None:
+            return list(self._templates.values())
+        return [t for t in self._templates.values() if tag in t.tags]
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """Add or update a template in the catalog."""
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        """Remove a template by ID. Returns True if removed."""
+        return self._templates.pop(template_id, None) is not None
+
+    def load_from_file(self, path: Path) -> int:
+        """
+        Load templates from a JSON file.
+        Returns number of templates loaded.
+        """
+        if not path.exists():
+            logger.warning(f"Template file not found: {path}")
+            return 0
+
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict):
+            data = [data]
+        count = 0
+        for item in data:
+            try:
+                tmpl = AgentTemplate.from_dict(item)
+                self.add_template(tmpl)
+                count += 1
+            except Exception as e:
+                logger.error(f"Failed to load template from {path}: {e}")
+        return count
+
+    def save_to_file(self, path: Path) -> None:
+        """Save all templates to a JSON file."""
+        data = [t.to_dict() for t in self._templates.values()]
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {tid: tmpl.to_dict() for tid, tmpl in self._templates.items()}
+
+
+def _get_builtin_templates() -> List[AgentTemplate]:
+    """Return the default set of quickstart agent templates."""
+    return [
+        AgentTemplate(
+            id="research-assistant",
+            name="Research Assistant",
+            description="A research assistant that can search the web, summarize documents, and answer questions.",
+            system_prompt="You are a helpful research assistant. Use the available tools to search for information, "
+                          "summarize findings, and provide accurate answers. Always cite your sources.",
+            model="gpt-4",
+            tools=["web_search", "document_reader", "summarizer"],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="web-search",
+                    command="npx",
+                    args=["@archestra/mcp-server-web-search"],
+                    env={"SEARCH_API_KEY": ""}
+                ),
+                MCPServerConfig(
+                    name="document-reader",
+                    command="npx",
+                    args=["@archestra/mcp-server-document-reader"]
+                )
+            ],
+            tags=["research", "quickstart"]
+        ),
+        AgentTemplate(
+            id="code-reviewer",
+            name="Code Reviewer",
+            description="An agent that reviews code changes, suggests improvements, and detects bugs.",
+            system_prompt="You are an expert code reviewer. Analyze code changes for bugs, style issues, "
+                          "and potential improvements. Provide clear, actionable feedback.",
+            model="gpt-4",
+            tools=["code_analysis", "git_diff", "linter"],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="code-analyzer",
+                    command="npx",
+                    args=["@archestra/mcp-server-code-analyzer"]
+                )
+            ],
+            tags=["development", "quickstart"]
+        ),
+        AgentTemplate(
+            id="customer-support",
+            name="Customer Support Agent",
+            description="Handles common customer inquiries, ticket creation, and FAQ responses.",
+            system_prompt="You are a friendly customer support agent. Help users with their questions, "
+                          "create support tickets when needed, and escalate complex issues.",
+            model="gpt-3.5-turbo",
+            tools=["ticket_system", "faq_search", "email_sender"],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="ticket-system",
+                    command="npx",
+                    args=["@archestra/mcp-server-ticket-system"]
+                )
+            ],
+            tags=["support", "quickstart"]
+        ),
+        AgentTemplate(
+            id="data-analyst",
+            name="Data Analyst",
+            description="Analyzes datasets, creates visualizations, and generates reports.",
+            system_prompt="You are a data analyst. Use the available tools to load datasets, perform analysis, "
+                          "create visualizations, and generate summary reports.",
+            model="gpt-4",
+            tools=["data_loader", "chart_generator", "report_writer"],
+            mcp_servers=[
+                MCPServerConfig(
+                    name="data-loader",
+                    command="npx",
+                    args=["@archestra/mcp-server-data-loader"]
+                ),
+                MCPServerConfig(
+                    name="chart-generator",
+                    command="npx",
+                    args=["@archestra/mcp-server-chart-generator"]
+                )
+            ],
+            tags=["data", "quickstart"]
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Convenience function
+# ---------------------------------------------------------------------------
+
+def create_default_catalog() -> TemplateCatalog:
+    """Create a TemplateCatalog pre-loaded with built-in templates."""
+    return TemplateCatalog()
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+import unittest
+from tempfile import TemporaryDirectory
+
+class TestTemplateCatalog(unittest.TestCase):
+
+    def setUp(self):
+        self.catalog = create_default_catalog()
+
+    def test_builtin_templates_loaded(self):
+        templates = self.catalog.list_templates()
+        self.assertGreater(len(templates), 0)
+        ids = [t.id for t in templates]
+        self.assertIn("research-assistant", ids)
+        self.assertIn("code-reviewer", ids)
+
+    def test_get_template_by_id(self):
+        tmpl = self.catalog.get("research-assistant")
+        self.assertIsNotNone(tmpl)
+        self.assertEqual(tmpl.name, "Research Assistant")
+        self.assertIn("web_search
