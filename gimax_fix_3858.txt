@@ -1,0 +1,242 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+import { z } from 'zod';
+import { AgentConfig, AgentTemplate, MCPConfig } from '../types/agent';
+import { logger } from '../utils/logger';
+
+// Schema definitions
+const MCPServerSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  authToken: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+const AgentTemplateSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  category: z.enum(['customer-support', 'data-analysis', 'code-review', 'general']),
+  systemPrompt: z.string().min(1),
+  model: z.string().min(1),
+  tools: z.array(z.string()).default([]),
+  mcpServers: z.array(MCPServerSchema).default([]),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  isActive: z.boolean().default(true),
+});
+
+// Template storage interface
+interface TemplateStore {
+  getById(id: string): Promise<AgentTemplate | null>;
+  getAll(filters?: TemplateFilter): Promise<AgentTemplate[]>;
+  create(template: Omit<AgentTemplate, 'id' | 'createdAt' | 'updatedAt'>): Promise<AgentTemplate>;
+  update(id: string, updates: Partial<AgentTemplate>): Promise<AgentTemplate>;
+  delete(id: string): Promise<void>;
+}
+
+interface TemplateFilter {
+  category?: string;
+  isActive?: boolean;
+  search?: string;
+}
+
+// In-memory store with persistence hooks
+class InMemoryTemplateStore implements TemplateStore {
+  private templates: Map<string, AgentTemplate> = new Map();
+  private persistenceCallback?: (templates: Map<string, AgentTemplate>) => Promise<void>;
+
+  constructor(persistenceCallback?: (templates: Map<string, AgentTemplate>) => Promise<void>) {
+    this.persistenceCallback = persistenceCallback;
+  }
+
+  async getById(id: string): Promise<AgentTemplate | null> {
+    return this.templates.get(id) || null;
+  }
+
+  async getAll(filters?: TemplateFilter): Promise<AgentTemplate[]> {
+    let result = Array.from(this.templates.values());
+    
+    if (filters) {
+      if (filters.category) {
+        result = result.filter(t => t.category === filters.category);
+      }
+      if (filters.isActive !== undefined) {
+        result = result.filter(t => t.isActive === filters.isActive);
+      }
+      if (filters.search) {
+        const searchLower = filters.search.toLowerCase();
+        result = result.filter(t => 
+          t.name.toLowerCase().includes(searchLower) || 
+          t.description?.toLowerCase().includes(searchLower)
+        );
+      }
+    }
+    
+    return result.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async create(template: Omit<AgentTemplate, 'id' | 'createdAt' | 'updatedAt'>): Promise<AgentTemplate> {
+    const now = new Date();
+    const newTemplate: AgentTemplate = {
+      ...template,
+      id: crypto.randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    
+    AgentTemplateSchema.parse(newTemplate);
+    this.templates.set(newTemplate.id, newTemplate);
+    await this.persist();
+    return newTemplate;
+  }
+
+  async update(id: string, updates: Partial<AgentTemplate>): Promise<AgentTemplate> {
+    const existing = this.templates.get(id);
+    if (!existing) {
+      throw new Error(`Template with id ${id} not found`);
+    }
+    
+    const updated = { ...existing, ...updates, updatedAt: new Date() };
+    AgentTemplateSchema.parse(updated);
+    this.templates.set(id, updated);
+    await this.persist();
+    return updated;
+  }
+
+  async delete(id: string): Promise<void> {
+    if (!this.templates.has(id)) {
+      throw new Error(`Template with id ${id} not found`);
+    }
+    this.templates.delete(id);
+    await this.persist();
+  }
+
+  private async persist(): Promise<void> {
+    if (this.persistenceCallback) {
+      try {
+        await this.persistenceCallback(this.templates);
+      } catch (error) {
+        logger.error('Failed to persist templates', error);
+      }
+    }
+  }
+}
+
+// Agent template catalog service
+export class AgentTemplateCatalog {
+  private store: TemplateStore;
+  private static instance: AgentTemplateCatalog;
+
+  private constructor(store?: TemplateStore) {
+    this.store = store || new InMemoryTemplateStore();
+  }
+
+  static getInstance(store?: TemplateStore): AgentTemplateCatalog {
+    if (!AgentTemplateCatalog.instance) {
+      AgentTemplateCatalog.instance = new AgentTemplateCatalog(store);
+    }
+    return AgentTemplateCatalog.instance;
+  }
+
+  async getTemplate(id: string): Promise<AgentTemplate | null> {
+    return this.store.getById(id);
+  }
+
+  async listTemplates(filters?: TemplateFilter): Promise<AgentTemplate[]> {
+    return this.store.getAll(filters);
+  }
+
+  async createTemplate(template: Omit<AgentTemplate, 'id' | 'createdAt' | 'updatedAt'>): Promise<AgentTemplate> {
+    return this.store.create(template);
+  }
+
+  async updateTemplate(id: string, updates: Partial<AgentTemplate>): Promise<AgentTemplate> {
+    return this.store.update(id, updates);
+  }
+
+  async deleteTemplate(id: string): Promise<void> {
+    return this.store.delete(id);
+  }
+
+  async applyTemplate(templateId: string, configOverrides?: Partial<AgentConfig>): Promise<AgentConfig> {
+    const template = await this.getTemplate(templateId);
+    if (!template) {
+      throw new Error(`Template ${templateId} not found`);
+    }
+
+    const agentConfig: AgentConfig = {
+      systemPrompt: template.systemPrompt,
+      model: template.model,
+      tools: template.tools,
+      mcpServers: template.mcpServers.map(server => ({
+        name: server.name,
+        url: server.url,
+        authToken: server.authToken,
+      })),
+      ...configOverrides,
+    };
+
+    logger.info(`Applied template ${template.name} (${templateId})`);
+    return agentConfig;
+  }
+
+  async installMCPServers(templateId: string): Promise<MCPConfig[]> {
+    const template = await this.getTemplate(templateId);
+    if (!template) {
+      throw new Error(`Template ${templateId} not found`);
+    }
+
+    const installedServers: MCPConfig[] = [];
+    for (const server of template.mcpServers) {
+      try {
+        // Simulate MCP server installation
+        const config: MCPConfig = {
+          name: server.name,
+          url: server.url,
+          authToken: server.authToken,
+          status: 'installed',
+          installedAt: new Date(),
+        };
+        installedServers.push(config);
+        logger.info(`Installed MCP server ${server.name} for template ${template.name}`);
+      } catch (error) {
+        logger.error(`Failed to install MCP server ${server.name}`, error);
+        throw error;
+      }
+    }
+
+    return installedServers;
+  }
+}
+
+// Pre-built quickstart templates
+export const QUICKSTART_TEMPLATES: Array<Omit<AgentTemplate, 'id' | 'createdAt' | 'updatedAt'>> = [
+  {
+    name: 'Customer Support Agent',
+    description: 'Handles customer inquiries with empathy and accuracy',
+    category: 'customer-support',
+    systemPrompt: `You are a helpful customer support agent. Your goal is to assist customers with their inquiries, resolve issues, and provide accurate information. Always be polite, patient, and professional. If you cannot resolve an issue, escalate it to a human agent.`,
+    model: 'gpt-4',
+    tools: ['ticket-system', 'knowledge-base', 'email'],
+    mcpServers: [
+      { name: 'zendesk', url: 'https://zendesk.mcp.archestra.ai', authToken: '${ZENDESK_TOKEN}' },
+      { name: 'freshdesk', url: 'https://freshdesk.mcp.archestra.ai' },
+    ],
+    version: '1.0.0',
+    isActive: true,
+  },
+  {
+    name: 'Data Analyst',
+    description: 'Analyzes datasets and generates insights',
+    category: 'data-analysis',
+    systemPrompt: `You are a data analyst expert. Your role is to analyze data, identify patterns, and provide actionable insights. Use statistical methods and visualization tools to present findings clearly. Always validate your assumptions and cite data sources.`,
+    model: 'gpt-4',
+    tools: ['python-executor', 'sql-query', 'chart-generator'],
+    mcpServers: [
+      { name: 'jupyter', url: 'https://jupyter.mcp.archestra.ai' },
+      { name: 'tableau', url: 'https://tableau.mcp.archestra.ai', authToken: '${TABLEAU_TOKEN}' },
+    ],
+    version: '1.0.0',
+    isActive:
