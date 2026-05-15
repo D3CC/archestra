@@ -1,0 +1,254 @@
+```typescript
+// src/catalog/types.ts
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  model: string;
+  tools: string[];
+  mcpServers: MCPServerConfig[];
+  category: string;
+  tags: string[];
+  version: string;
+  author?: string;
+  createdAt?: string;
+}
+
+export interface MCPServerConfig {
+  name: string;
+  url: string;
+  auth?: {
+    type: 'none' | 'bearer' | 'api-key';
+    credentials?: Record<string, string>;
+  };
+}
+
+export interface CatalogEntry {
+  template: AgentTemplate;
+  installed: boolean;
+  lastUsed?: string;
+}
+
+// src/catalog/quickstartCatalog.ts
+import { AgentTemplate } from './types';
+
+const QUICKSTART_CATALOG: AgentTemplate[] = [
+  {
+    id: 'customer-support-agent',
+    name: 'Customer Support Agent',
+    description: 'Handles customer inquiries, ticket creation, and FAQ responses',
+    systemPrompt: 'You are a helpful customer support agent. Answer questions based on the knowledge base, create tickets when needed, and always be polite and professional.',
+    model: 'gpt-4',
+    tools: ['ticket-creator', 'knowledge-base-search', 'sentiment-analyzer'],
+    mcpServers: [
+      {
+        name: 'ticket-system',
+        url: 'https://mcp.example.com/ticket-system',
+        auth: { type: 'bearer' }
+      },
+      {
+        name: 'knowledge-base',
+        url: 'https://mcp.example.com/knowledge-base',
+        auth: { type: 'api-key' }
+      }
+    ],
+    category: 'Customer Service',
+    tags: ['support', 'ticketing', 'faq'],
+    version: '1.0.0',
+    author: 'Archestra Team',
+    createdAt: '2024-01-15T10:00:00Z'
+  },
+  {
+    id: 'code-review-assistant',
+    name: 'Code Review Assistant',
+    description: 'Reviews pull requests, suggests improvements, and checks for common bugs',
+    systemPrompt: 'You are an expert code reviewer. Analyze code changes, suggest improvements, check for security vulnerabilities, and ensure best practices are followed.',
+    model: 'gpt-4-turbo',
+    tools: ['static-analysis', 'security-scanner', 'style-checker'],
+    mcpServers: [
+      {
+        name: 'github-integration',
+        url: 'https://mcp.example.com/github',
+        auth: { type: 'bearer' }
+      },
+      {
+        name: 'code-analysis',
+        url: 'https://mcp.example.com/code-analysis',
+        auth: { type: 'api-key' }
+      }
+    ],
+    category: 'Development',
+    tags: ['code-review', 'github', 'static-analysis'],
+    version: '1.1.0',
+    author: 'Archestra Team',
+    createdAt: '2024-02-01T14:30:00Z'
+  },
+  {
+    id: 'data-analyst',
+    name: 'Data Analyst Agent',
+    description: 'Analyzes datasets, generates reports, and creates visualizations',
+    systemPrompt: 'You are a data analyst assistant. Help users understand their data, generate insights, create visualizations, and export reports in various formats.',
+    model: 'gpt-4',
+    tools: ['data-query', 'chart-generator', 'report-exporter'],
+    mcpServers: [
+      {
+        name: 'database-connector',
+        url: 'https://mcp.example.com/database',
+        auth: { type: 'bearer' }
+      },
+      {
+        name: 'visualization-service',
+        url: 'https://mcp.example.com/visualization',
+        auth: { type: 'none' }
+      }
+    ],
+    category: 'Data & Analytics',
+    tags: ['analytics', 'visualization', 'reporting'],
+    version: '1.0.0',
+    author: 'Archestra Team',
+    createdAt: '2024-03-10T09:00:00Z'
+  },
+  {
+    id: 'devops-automation',
+    name: 'DevOps Automation Agent',
+    description: 'Manages CI/CD pipelines, monitors deployments, and handles infrastructure',
+    systemPrompt: 'You are a DevOps automation agent. Manage deployments, monitor system health, handle rollbacks, and optimize infrastructure resources.',
+    model: 'gpt-4-turbo',
+    tools: ['deployment-manager', 'monitoring-dashboard', 'incident-responder'],
+    mcpServers: [
+      {
+        name: 'kubernetes-api',
+        url: 'https://mcp.example.com/k8s',
+        auth: { type: 'bearer' }
+      },
+      {
+        name: 'ci-cd-pipeline',
+        url: 'https://mcp.example.com/cicd',
+        auth: { type: 'api-key' }
+      },
+      {
+        name: 'monitoring-stack',
+        url: 'https://mcp.example.com/monitoring',
+        auth: { type: 'bearer' }
+      }
+    ],
+    category: 'DevOps',
+    tags: ['deployment', 'monitoring', 'ci-cd'],
+    version: '1.2.0',
+    author: 'Archestra Team',
+    createdAt: '2024-04-05T16:45:00Z'
+  },
+  {
+    id: 'content-writer',
+    name: 'Content Writer Agent',
+    description: 'Creates blog posts, social media content, and marketing copy',
+    systemPrompt: 'You are a creative content writer. Generate engaging content for various platforms, adapt tone and style based on requirements, and optimize for SEO.',
+    model: 'gpt-4',
+    tools: ['seo-analyzer', 'grammar-checker', 'content-planner'],
+    mcpServers: [
+      {
+        name: 'cms-integration',
+        url: 'https://mcp.example.com/cms',
+        auth: { type: 'bearer' }
+      },
+      {
+        name: 'seo-service',
+        url: 'https://mcp.example.com/seo',
+        auth: { type: 'api-key' }
+      }
+    ],
+    category: 'Content Creation',
+    tags: ['writing', 'seo', 'marketing'],
+    version: '1.0.0',
+    author: 'Archestra Team',
+    createdAt: '2024-05-20T11:15:00Z'
+  }
+];
+
+export function getQuickstartCatalog(): AgentTemplate[] {
+  return [...QUICKSTART_CATALOG];
+}
+
+export function getTemplateById(id: string): AgentTemplate | undefined {
+  return QUICKSTART_CATALOG.find(template => template.id === id);
+}
+
+export function getTemplatesByCategory(category: string): AgentTemplate[] {
+  return QUICKSTART_CATALOG.filter(template => template.category === category);
+}
+
+export function searchTemplates(query: string): AgentTemplate[] {
+  const lowerQuery = query.toLowerCase();
+  return QUICKSTART_CATALOG.filter(template =>
+    template.name.toLowerCase().includes(lowerQuery) ||
+    template.description.toLowerCase().includes(lowerQuery) ||
+    template.tags.some(tag => tag.toLowerCase().includes(lowerQuery))
+  );
+}
+
+// src/catalog/installer.ts
+import { AgentTemplate, MCPServerConfig } from './types';
+
+export interface InstallationResult {
+  success: boolean;
+  agentId?: string;
+  mcpResults: Array<{
+    serverName: string;
+    installed: boolean;
+    error?: string;
+  }>;
+  error?: string;
+}
+
+export class AgentInstaller {
+  private installedAgents: Map<string, boolean> = new Map();
+  private installedMcpServers: Map<string, boolean> = new Map();
+
+  async installAgent(template: AgentTemplate): Promise<InstallationResult> {
+    const result: InstallationResult = {
+      success: false,
+      mcpResults: []
+    };
+
+    try {
+      // Validate template
+      this.validateTemplate(template);
+
+      // Install MCP servers first
+      for (const server of template.mcpServers) {
+        try {
+          await this.installMCPServer(server);
+          result.mcpResults.push({
+            serverName: server.name,
+            installed: true
+          });
+          this.installedMcpServers.set(server.name, true);
+        } catch (error) {
+          result.mcpResults.push({
+            serverName: server.name,
+            installed: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+
+      // Configure agent
+      const agentId = await this.configureAgent(template);
+      this.installedAgents.set(agentId, true);
+
+      result.success = true;
+      result.agentId = agentId;
+    } catch (error) {
+      result.error = error instanceof Error ? error.message : 'Installation failed';
+    }
+
+    return result;
+  }
+
+  private validateTemplate(template: AgentTemplate): void {
+    if (!template.id || !template.name || !template.systemPrompt || !template.model) {
+      throw new Error('Invalid template: missing required fields');
+    }
+
+    if
