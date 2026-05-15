@@ -1,0 +1,255 @@
+```python
+# archestra/agents/template_catalog.py
+
+"""
+Agent Template Catalog - Quickstart catalog of pre-built agent templates.
+
+This module provides a catalog of pre-configured agent templates that users
+can deploy with a single click. Each template includes a system prompt,
+model configuration, tool assignments, and associated MCP server definitions.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data Models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MCPServerDefinition:
+    """Definition of an MCP server to be installed alongside the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    url: Optional[str] = None  # For remote MCP servers
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MCPServerDefinition":
+        return cls(**data)
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template for quickstart deployment."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerDefinition] = field(default_factory=list)
+    category: str = "general"
+    tags: List[str] = field(default_factory=list)
+    version: str = "1.0.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = asdict(self)
+        result["mcp_servers"] = [s.to_dict() for s in self.mcp_servers]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        mcp_servers = [
+            MCPServerDefinition.from_dict(s) for s in data.pop("mcp_servers", [])
+        ]
+        return cls(mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Template Catalog
+# ---------------------------------------------------------------------------
+
+class TemplateCatalog:
+    """
+    Catalog of pre-built agent templates.
+
+    Provides methods to list, get, search, and install templates.
+    Templates can be loaded from a built-in set or from external JSON files.
+    """
+
+    def __init__(self, templates: Optional[List[AgentTemplate]] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        if templates:
+            for t in templates:
+                self._templates[t.id] = t
+
+    # -----------------------------------------------------------------------
+    # Built-in templates
+    # -----------------------------------------------------------------------
+
+    @classmethod
+    def with_defaults(cls) -> "TemplateCatalog":
+        """Create a catalog pre-populated with built-in templates."""
+        return cls(cls._builtin_templates())
+
+    @staticmethod
+    def _builtin_templates() -> List[AgentTemplate]:
+        return [
+            AgentTemplate(
+                id="customer-support",
+                name="Customer Support Agent",
+                description="Handles common customer inquiries, ticket creation, and FAQ responses.",
+                system_prompt=(
+                    "You are a helpful customer support agent. "
+                    "Respond politely and accurately. Use the available tools to look up "
+                    "information, create tickets, and escalate issues when necessary."
+                ),
+                model="gpt-4",
+                tools=["search_knowledge_base", "create_ticket", "escalate_to_human"],
+                mcp_servers=[
+                    MCPServerDefinition(
+                        name="support-db",
+                        command="npx",
+                        args=["-y", "@archestra/mcp-support-db"],
+                        env={"SUPPORT_DB_URL": "https://support.example.com/api"},
+                    ),
+                ],
+                category="customer-support",
+                tags=["support", "ticketing", "faq"],
+            ),
+            AgentTemplate(
+                id="code-reviewer",
+                name="Code Reviewer Agent",
+                description="Reviews pull requests for code quality, style, and security issues.",
+                system_prompt=(
+                    "You are an expert code reviewer. Analyze the provided code diff, "
+                    "identify potential bugs, style violations, and security vulnerabilities. "
+                    "Provide constructive feedback."
+                ),
+                model="gpt-4-turbo",
+                tools=["analyze_diff", "check_style", "scan_security"],
+                mcp_servers=[
+                    MCPServerDefinition(
+                        name="code-analysis",
+                        command="docker",
+                        args=["run", "--rm", "archestra/code-analyzer:latest"],
+                    ),
+                ],
+                category="development",
+                tags=["code-review", "security", "linting"],
+            ),
+            AgentTemplate(
+                id="data-analyst",
+                name="Data Analyst Agent",
+                description="Queries databases, generates reports, and visualizes data.",
+                system_prompt=(
+                    "You are a data analyst assistant. Help users query databases, "
+                    "interpret results, and create visualizations. Always explain your findings."
+                ),
+                model="gpt-4",
+                tools=["query_database", "generate_chart", "export_csv"],
+                mcp_servers=[
+                    MCPServerDefinition(
+                        name="db-connector",
+                        command="uvx",
+                        args=["archestra-mcp-db"],
+                        env={"DB_CONNECTION_STRING": "postgresql://localhost:5432/mydb"},
+                    ),
+                ],
+                category="data",
+                tags=["analytics", "sql", "visualization"],
+            ),
+            AgentTemplate(
+                id="devops-assistant",
+                name="DevOps Assistant Agent",
+                description="Manages deployments, monitors infrastructure, and runs CI/CD pipelines.",
+                system_prompt=(
+                    "You are a DevOps assistant. Help manage deployments, monitor services, "
+                    "and execute CI/CD tasks. Always confirm before destructive actions."
+                ),
+                model="gpt-4",
+                tools=["deploy_service", "check_status", "run_pipeline"],
+                mcp_servers=[
+                    MCPServerDefinition(
+                        name="k8s-manager",
+                        command="npx",
+                        args=["-y", "@archestra/mcp-k8s"],
+                        env={"KUBECONFIG": "/home/user/.kube/config"},
+                    ),
+                ],
+                category="devops",
+                tags=["kubernetes", "ci-cd", "monitoring"],
+            ),
+        ]
+
+    # -----------------------------------------------------------------------
+    # Catalog operations
+    # -----------------------------------------------------------------------
+
+    def list_templates(self, category: Optional[str] = None) -> List[AgentTemplate]:
+        """List all templates, optionally filtered by category."""
+        if category:
+            return [t for t in self._templates.values() if t.category == category]
+        return list(self._templates.values())
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """Get a template by its ID."""
+        return self._templates.get(template_id)
+
+    def add_template(self, template: AgentTemplate) -> None:
+        """Add a template to the catalog."""
+        if template.id in self._templates:
+            logger.warning("Overwriting existing template: %s", template.id)
+        self._templates[template.id] = template
+
+    def remove_template(self, template_id: str) -> bool:
+        """Remove a template from the catalog. Returns True if removed."""
+        return self._templates.pop(template_id, None) is not None
+
+    def search_templates(self, query: str) -> List[AgentTemplate]:
+        """Search templates by name, description, or tags."""
+        q = query.lower()
+        results = []
+        for t in self._templates.values():
+            if (q in t.name.lower()
+                    or q in t.description.lower()
+                    or any(q in tag.lower() for tag in t.tags)):
+                results.append(t)
+        return results
+
+    # -----------------------------------------------------------------------
+    # Persistence
+    # -----------------------------------------------------------------------
+
+    def save_to_file(self, path: Path) -> None:
+        """Save the catalog to a JSON file."""
+        data = [t.to_dict() for t in self._templates.values()]
+        path.write_text(json.dumps(data, indent=2))
+        logger.info("Saved %d templates to %s", len(data), path)
+
+    @classmethod
+    def load_from_file(cls, path: Path) -> "TemplateCatalog":
+        """Load a catalog from a JSON file."""
+        if not path.exists():
+            logger.warning("File not found: %s", path)
+            return cls()
+        data = json.loads(path.read_text())
+        templates = [AgentTemplate.from_dict(item) for item in data]
+        logger.info("Loaded %d templates from %s", len(templates), path)
+        return cls(templates)
+
+    # -----------------------------------------------------------------------
+    # Installation helper (stub)
+    # -----------------------------------------------------------------------
+
+    def install_template(self, template_id: str) -> Dict[str, Any]:
+        """
+        Simulate installing an agent template.
+
+        In a real implementation, this would:
+        - Create the agent configuration
+        - Install MCP servers
+        - Register the agent with the runtime
