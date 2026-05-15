@@ -1,0 +1,228 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+import { z } from 'zod';
+import { AgentConfig, AgentTemplate, MCPInstallation } from './types';
+import { logger } from '../utils/logger';
+
+// Schema for validating template definitions
+const AgentTemplateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().min(1),
+  category: z.enum(['customer-support', 'data-analysis', 'devops', 'content-creation', 'research', 'custom']),
+  systemPrompt: z.string().min(1),
+  model: z.string().min(1),
+  tools: z.array(z.object({
+    name: z.string().min(1),
+    description: z.string().optional(),
+    parameters: z.record(z.any()).optional(),
+  })),
+  mcpServers: z.array(z.object({
+    name: z.string().min(1),
+    url: z.string().url(),
+    auth: z.object({
+      type: z.enum(['none', 'api-key', 'oauth2']),
+      credentials: z.record(z.any()).optional(),
+    }).optional(),
+  })),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  tags: z.array(z.string()).optional(),
+});
+
+export type AgentTemplateDefinition = z.infer<typeof AgentTemplateSchema>;
+
+// Built-in quickstart templates
+const BUILT_IN_TEMPLATES: AgentTemplateDefinition[] = [
+  {
+    id: 'customer-support-basic',
+    name: 'Basic Customer Support Agent',
+    description: 'Handles common customer inquiries with FAQ lookup and ticket creation',
+    category: 'customer-support',
+    systemPrompt: `You are a helpful customer support agent. Your role is to:
+1. Greet customers warmly and identify their issue
+2. Search the FAQ database for known solutions
+3. Escalate complex issues to human agents
+4. Create support tickets when needed
+5. Always be polite, patient, and professional`,
+    model: 'gpt-4',
+    tools: [
+      { name: 'faq_search', description: 'Search FAQ database for answers' },
+      { name: 'create_ticket', description: 'Create a support ticket' },
+      { name: 'escalate_to_human', description: 'Escalate to human agent' },
+    ],
+    mcpServers: [
+      {
+        name: 'faq-db',
+        url: 'https://mcp.example.com/faq',
+        auth: { type: 'api-key', credentials: { header: 'X-API-Key' } },
+      },
+      {
+        name: 'ticketing',
+        url: 'https://mcp.example.com/tickets',
+        auth: { type: 'oauth2' },
+      },
+    ],
+    version: '1.0.0',
+    tags: ['support', 'customer-service', 'beginner'],
+  },
+  {
+    id: 'data-analyst',
+    name: 'Data Analyst Agent',
+    description: 'Analyzes datasets, generates reports, and creates visualizations',
+    category: 'data-analysis',
+    systemPrompt: `You are a data analysis expert. Your capabilities include:
+1. Loading and inspecting datasets (CSV, JSON, SQL)
+2. Performing statistical analysis and data cleaning
+3. Generating charts and visualizations
+4. Creating summary reports with insights
+5. Explaining findings in plain language`,
+    model: 'gpt-4',
+    tools: [
+      { name: 'load_dataset', description: 'Load a dataset from file or URL' },
+      { name: 'run_analysis', description: 'Run statistical analysis' },
+      { name: 'create_chart', description: 'Generate a chart' },
+      { name: 'generate_report', description: 'Create a summary report' },
+    ],
+    mcpServers: [
+      {
+        name: 'data-sources',
+        url: 'https://mcp.example.com/data',
+        auth: { type: 'api-key' },
+      },
+      {
+        name: 'visualization',
+        url: 'https://mcp.example.com/charts',
+      },
+    ],
+    version: '1.0.0',
+    tags: ['data', 'analytics', 'visualization'],
+  },
+  {
+    id: 'devops-monitor',
+    name: 'DevOps Monitoring Agent',
+    description: 'Monitors infrastructure, alerts on incidents, and runs diagnostic commands',
+    category: 'devops',
+    systemPrompt: `You are a DevOps monitoring agent. Your responsibilities:
+1. Monitor system metrics (CPU, memory, disk, network)
+2. Alert on anomalies and threshold breaches
+3. Run diagnostic commands and analyze logs
+4. Suggest remediation steps
+5. Coordinate with incident response systems`,
+    model: 'gpt-4',
+    tools: [
+      { name: 'get_metrics', description: 'Fetch current system metrics' },
+      { name: 'run_diagnostic', description: 'Run a diagnostic command' },
+      { name: 'query_logs', description: 'Search through system logs' },
+      { name: 'create_alert', description: 'Create an alert' },
+    ],
+    mcpServers: [
+      {
+        name: 'monitoring',
+        url: 'https://mcp.example.com/monitor',
+        auth: { type: 'api-key' },
+      },
+      {
+        name: 'logging',
+        url: 'https://mcp.example.com/logs',
+      },
+    ],
+    version: '1.0.0',
+    tags: ['devops', 'monitoring', 'infrastructure'],
+  },
+  {
+    id: 'content-writer',
+    name: 'Content Creation Agent',
+    description: 'Generates blog posts, social media content, and marketing copy',
+    category: 'content-creation',
+    systemPrompt: `You are a creative content writer. Your skills include:
+1. Writing engaging blog posts and articles
+2. Creating social media content for various platforms
+3. Crafting marketing copy and email campaigns
+4. Adapting tone and style to brand guidelines
+5. Optimizing content for SEO`,
+    model: 'gpt-4',
+    tools: [
+      { name: 'generate_outline', description: 'Create an article outline' },
+      { name: 'write_draft', description: 'Write a draft based on outline' },
+      { name: 'optimize_seo', description: 'Optimize content for search engines' },
+      { name: 'check_grammar', description: 'Check grammar and style' },
+    ],
+    mcpServers: [
+      {
+        name: 'seo-tools',
+        url: 'https://mcp.example.com/seo',
+        auth: { type: 'api-key' },
+      },
+      {
+        name: 'grammar-check',
+        url: 'https://mcp.example.com/grammar',
+      },
+    ],
+    version: '1.0.0',
+    tags: ['content', 'writing', 'marketing'],
+  },
+  {
+    id: 'research-assistant',
+    name: 'Research Assistant Agent',
+    description: 'Conducts web research, summarizes findings, and cites sources',
+    category: 'research',
+    systemPrompt: `You are a thorough research assistant. Your approach:
+1. Formulate research questions based on user needs
+2. Search multiple sources for relevant information
+3. Evaluate source credibility and bias
+4. Summarize findings with proper citations
+5. Provide balanced perspectives on controversial topics`,
+    model: 'gpt-4',
+    tools: [
+      { name: 'web_search', description: 'Search the web for information' },
+      { name: 'summarize_page', description: 'Summarize a web page' },
+      { name: 'check_facts', description: 'Verify facts against known sources' },
+      { name: 'generate_citation', description: 'Generate a citation in MLA/APA format' },
+    ],
+    mcpServers: [
+      {
+        name: 'search-engine',
+        url: 'https://mcp.example.com/search',
+        auth: { type: 'api-key' },
+      },
+      {
+        name: 'citation-manager',
+        url: 'https://mcp.example.com/citations',
+      },
+    ],
+    version: '1.0.0',
+    tags: ['research', 'writing', 'academic'],
+  },
+];
+
+export class AgentTemplateCatalog {
+  private templates: Map<string, AgentTemplateDefinition> = new Map();
+  private customTemplates: Map<string, AgentTemplateDefinition> = new Map();
+
+  constructor() {
+    this.initializeBuiltInTemplates();
+  }
+
+  private initializeBuiltInTemplates(): void {
+    for (const template of BUILT_IN_TEMPLATES) {
+      this.templates.set(template.id, template);
+    }
+    logger.info(`Initialized ${this.templates.size} built-in agent templates`);
+  }
+
+  /**
+   * Get all available templates (built-in + custom)
+   */
+  getAllTemplates(): AgentTemplateDefinition[] {
+    return [
+      ...Array.from(this.templates.values()),
+      ...Array.from(this.customTemplates.values()),
+    ];
+  }
+
+  /**
+   * Get templates by category
+   */
+  getTemplatesByCategory(category: string): AgentTemplateDefinition[] {
+    return this.getAllTemplates().filter(t => t.category === category);
+ 
