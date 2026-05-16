@@ -217,9 +217,32 @@ const registry = defineArchestraTools([
               "Failed to update conversation artifact. The conversation may not exist or you may not have permission to update it.",
             );
           }
+        } else if (context.chatOpsBindingId && context.conversationId && context.organizationId) {
+          const binding = await ChatOpsChannelBindingModel.findById(
+            context.chatOpsBindingId,
+          );
+          if (!binding || binding.organizationId !== context.organizationId) {
+            return errorResult(
+              "ChatOps channel binding not found or unauthorized.",
+            );
+          }
+
+          const userIdForChatOps = context.userId || "chatops";
+          const updated = await ConversationModel.update(
+            context.conversationId,
+            userIdForChatOps,
+            context.organizationId,
+            { artifact: args.content },
+          );
+
+          if (!updated) {
+            return errorResult(
+              "Failed to update ChatOps conversation artifact.",
+            );
+          }
         } else {
           return errorResult(
-            "This tool requires conversation context. It can only be used within an active chat conversation or scheduled run.",
+            "This tool requires conversation context. It can only be used within an active chat conversation, ChatOps channel, or scheduled run.",
           );
         }
 
