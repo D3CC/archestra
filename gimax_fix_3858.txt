@@ -1,0 +1,237 @@
+```typescript
+// src/catalog/agent-template-catalog.ts
+import { z } from 'zod';
+import { AgentConfig, AgentRole, ModelProvider, ToolAssignment } from '../agent/types';
+import { MCPServerConfig } from '../mcp/types';
+
+/**
+ * Schema for an agent template in the catalog.
+ */
+export const AgentTemplateSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  category: z.enum(['general', 'coding', 'writing', 'data', 'devops', 'customer-support']),
+  systemPrompt: z.string().min(1),
+  model: z.object({
+    provider: z.nativeEnum(ModelProvider),
+    modelId: z.string(),
+    temperature: z.number().min(0).max(2).optional(),
+    maxTokens: z.number().int().positive().optional(),
+  }),
+  tools: z.array(z.object({
+    toolId: z.string(),
+    enabled: z.boolean().default(true),
+    config: z.record(z.unknown()).optional(),
+  })),
+  mcpServers: z.array(z.object({
+    serverId: z.string(),
+    url: z.string().url(),
+    config: z.record(z.unknown()).optional(),
+  })),
+  metadata: z.object({
+    author: z.string().optional(),
+    version: z.string().regex(/^\d+\.\d+\.\d+$/),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    tags: z.array(z.string()).optional(),
+  }),
+});
+
+export type AgentTemplate = z.infer<typeof AgentTemplateSchema>;
+
+/**
+ * In-memory catalog of pre-built agent templates.
+ * In production, this would be backed by a database or remote registry.
+ */
+export class AgentTemplateCatalog {
+  private templates: Map<string, AgentTemplate> = new Map();
+
+  constructor(initialTemplates?: AgentTemplate[]) {
+    if (initialTemplates) {
+      for (const tmpl of initialTemplates) {
+        this.addTemplate(tmpl);
+      }
+    }
+  }
+
+  /**
+   * Add a template to the catalog. Validates against schema.
+   */
+  addTemplate(template: AgentTemplate): void {
+    const parsed = AgentTemplateSchema.parse(template);
+    this.templates.set(parsed.id, parsed);
+  }
+
+  /**
+   * Retrieve a template by ID.
+   */
+  getTemplate(id: string): AgentTemplate | undefined {
+    return this.templates.get(id);
+  }
+
+  /**
+   * List all templates, optionally filtered by category.
+   */
+  listTemplates(category?: string): AgentTemplate[] {
+    const all = Array.from(this.templates.values());
+    if (category) {
+      return all.filter(t => t.category === category);
+    }
+    return all;
+  }
+
+  /**
+   * Remove a template from the catalog.
+   */
+  removeTemplate(id: string): boolean {
+    return this.templates.delete(id);
+  }
+
+  /**
+   * Convert a template into a fully configured AgentConfig and MCPServerConfig list.
+   * This is the "single click" instantiation.
+   */
+  instantiate(templateId: string): { agentConfig: AgentConfig; mcpServers: MCPServerConfig[] } | null {
+    const template = this.getTemplate(templateId);
+    if (!template) return null;
+
+    const agentConfig: AgentConfig = {
+      role: AgentRole.ASSISTANT,
+      systemPrompt: template.systemPrompt,
+      model: {
+        provider: template.model.provider,
+        modelId: template.model.modelId,
+        temperature: template.model.temperature ?? 0.7,
+        maxTokens: template.model.maxTokens ?? 4096,
+      },
+      tools: template.tools.map(t => ({
+        toolId: t.toolId,
+        enabled: t.enabled,
+        config: t.config ?? {},
+      })) as ToolAssignment[],
+    };
+
+    const mcpServers: MCPServerConfig[] = template.mcpServers.map(s => ({
+      serverId: s.serverId,
+      url: s.url,
+      config: s.config ?? {},
+    }));
+
+    return { agentConfig, mcpServers };
+  }
+}
+
+// src/catalog/default-templates.ts
+import { AgentTemplate, ModelProvider } from './agent-template-catalog';
+
+/**
+ * A set of default templates for the quickstart catalog.
+ */
+export const DEFAULT_TEMPLATES: AgentTemplate[] = [
+  {
+    id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+    name: 'Code Assistant',
+    description: 'A general-purpose coding assistant with code analysis and generation tools.',
+    category: 'coding',
+    systemPrompt: 'You are an expert software engineer. Help users write, review, and debug code. Provide clear explanations and best practices.',
+    model: {
+      provider: ModelProvider.OPENAI,
+      modelId: 'gpt-4',
+      temperature: 0.3,
+      maxTokens: 8192,
+    },
+    tools: [
+      { toolId: 'code-executor', enabled: true },
+      { toolId: 'file-reader', enabled: true },
+      { toolId: 'search-web', enabled: false },
+    ],
+    mcpServers: [
+      { serverId: 'github-mcp', url: 'https://mcp.github.com/v1', config: { scopes: ['repo'] } },
+    ],
+    metadata: {
+      author: 'Archestra Team',
+      version: '1.0.0',
+      createdAt: '2025-01-15T10:00:00Z',
+      updatedAt: '2025-01-15T10:00:00Z',
+      tags: ['coding', 'github', 'debugging'],
+    },
+  },
+  {
+    id: 'b2c3d4e5-f6a7-8901-bcde-f12345678901',
+    name: 'Writing Assistant',
+    description: 'Helps with content creation, editing, and proofreading.',
+    category: 'writing',
+    systemPrompt: 'You are a professional writer and editor. Assist with drafting, revising, and polishing text. Maintain tone and style consistency.',
+    model: {
+      provider: ModelProvider.ANTHROPIC,
+      modelId: 'claude-3-opus-20240229',
+      temperature: 0.7,
+      maxTokens: 4096,
+    },
+    tools: [
+      { toolId: 'grammar-check', enabled: true },
+      { toolId: 'thesaurus', enabled: true },
+    ],
+    mcpServers: [],
+    metadata: {
+      author: 'Archestra Team',
+      version: '1.0.0',
+      createdAt: '2025-01-16T14:30:00Z',
+      updatedAt: '2025-01-16T14:30:00Z',
+      tags: ['writing', 'editing'],
+    },
+  },
+  {
+    id: 'c3d4e5f6-a7b8-9012-cdef-123456789012',
+    name: 'Data Analyst',
+    description: 'Analyzes datasets, generates reports, and creates visualizations.',
+    category: 'data',
+    systemPrompt: 'You are a data analyst. Interpret data, perform statistical analysis, and present insights in a clear, actionable manner.',
+    model: {
+      provider: ModelProvider.OPENAI,
+      modelId: 'gpt-4-turbo',
+      temperature: 0.2,
+      maxTokens: 16384,
+    },
+    tools: [
+      { toolId: 'data-query', enabled: true },
+      { toolId: 'chart-generator', enabled: true },
+      { toolId: 'csv-importer', enabled: true },
+    ],
+    mcpServers: [
+      { serverId: 'postgres-mcp', url: 'https://mcp.postgres.example.com/v1', config: { database: 'analytics' } },
+    ],
+    metadata: {
+      author: 'Archestra Team',
+      version: '1.1.0',
+      createdAt: '2025-02-01T09:00:00Z',
+      updatedAt: '2025-02-10T16:00:00Z',
+      tags: ['data', 'analytics', 'sql'],
+    },
+  },
+];
+
+// src/catalog/agent-template-catalog.test.ts
+import { describe, it, expect, beforeEach } from 'vitest';
+import { AgentTemplateCatalog, AgentTemplateSchema, AgentTemplate } from './agent-template-catalog';
+import { DEFAULT_TEMPLATES } from './default-templates';
+import { ModelProvider } from '../agent/types';
+
+describe('AgentTemplateCatalog', () => {
+  let catalog: AgentTemplateCatalog;
+
+  beforeEach(() => {
+    catalog = new AgentTemplateCatalog(DEFAULT_TEMPLATES);
+  });
+
+  it('should initialize with default templates', () => {
+    const templates = catalog.listTemplates();
+    expect(templates.length).toBe(DEFAULT_TEMPLATES.length);
+  });
+
+  it('should add a new template', () => {
+    const newTemplate: AgentTemplate = {
+      id: '00000000-0000-0000-0000-000000000001',
+      name: 'Test Template',
+      description: 'A test template
