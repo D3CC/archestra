@@ -1,0 +1,241 @@
+```python
+"""
+Agent Template Catalog - Quickstart pre-built agent templates.
+
+This module provides a catalog of pre-built agent templates that allow users
+to quickly spin up fully-configured agents with system prompts, model settings,
+tool assignments, and MCP server installations in a single click.
+
+Usage:
+    from archestra.agent_catalog import AgentCatalog, AgentTemplate
+    
+    catalog = AgentCatalog()
+    templates = catalog.list_templates()
+    agent = catalog.instantiate("code-assistant")
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MCPServerConfig:
+    """Configuration for an MCP server to be installed with the agent."""
+    name: str
+    command: str
+    args: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    transport: str = "stdio"  # stdio or sse
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MCPServerConfig":
+        return cls(**data)
+
+
+@dataclass
+class AgentTemplate:
+    """A pre-built agent template with all configuration."""
+    id: str
+    name: str
+    description: str
+    system_prompt: str
+    model: str
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    tools: List[str] = field(default_factory=list)
+    mcp_servers: List[MCPServerConfig] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = asdict(self)
+        result["mcp_servers"] = [s.to_dict() for s in self.mcp_servers]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentTemplate":
+        mcp_servers = [MCPServerConfig.from_dict(s) for s in data.pop("mcp_servers", [])]
+        return cls(mcp_servers=mcp_servers, **data)
+
+
+# ---------------------------------------------------------------------------
+# Built-in templates
+# ---------------------------------------------------------------------------
+
+_BUILTIN_TEMPLATES: List[AgentTemplate] = [
+    AgentTemplate(
+        id="code-assistant",
+        name="Code Assistant",
+        description="A general-purpose coding assistant with file system and shell access.",
+        system_prompt="You are a helpful coding assistant. You help users write, debug, and understand code. "
+                      "Be concise and provide working solutions. Use the available tools to read and write files, "
+                      "execute shell commands, and search codebases.",
+        model="gpt-4o",
+        temperature=0.3,
+        max_tokens=8192,
+        tools=["read_file", "write_file", "shell_exec", "search_code", "list_directory"],
+        mcp_servers=[
+            MCPServerConfig(
+                name="filesystem",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+                transport="stdio",
+            ),
+            MCPServerConfig(
+                name="shell",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-shell"],
+                transport="stdio",
+            ),
+        ],
+        metadata={"category": "development", "difficulty": "beginner"},
+    ),
+    AgentTemplate(
+        id="data-analyst",
+        name="Data Analyst",
+        description="An agent specialized in data analysis, visualization, and reporting.",
+        system_prompt="You are a data analyst assistant. Your role is to help users explore data, "
+                      "create visualizations, run statistical analyses, and generate reports. "
+                      "Use pandas, matplotlib, and other data tools. Always explain your findings clearly.",
+        model="gpt-4o",
+        temperature=0.5,
+        max_tokens=8192,
+        tools=["read_file", "write_file", "shell_exec", "python_exec", "search_data"],
+        mcp_servers=[
+            MCPServerConfig(
+                name="python-exec",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-python-exec"],
+                transport="stdio",
+            ),
+        ],
+        metadata={"category": "data-science", "difficulty": "intermediate"},
+    ),
+    AgentTemplate(
+        id="customer-support",
+        name="Customer Support Agent",
+        description="A friendly customer support agent with knowledge base and ticketing access.",
+        system_prompt="You are a customer support agent. Be polite, empathetic, and helpful. "
+                      "Use the knowledge base to find answers and the ticketing system to manage issues. "
+                      "Always confirm the user's issue before escalating.",
+        model="gpt-4o-mini",
+        temperature=0.7,
+        max_tokens=4096,
+        tools=["search_knowledge_base", "create_ticket", "update_ticket", "get_user_info"],
+        mcp_servers=[
+            MCPServerConfig(
+                name="knowledge-base",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-knowledge-base"],
+                transport="stdio",
+            ),
+        ],
+        metadata={"category": "business", "difficulty": "beginner"},
+    ),
+    AgentTemplate(
+        id="devops-engineer",
+        name="DevOps Engineer",
+        description="An agent for infrastructure management, deployment, and monitoring.",
+        system_prompt="You are a DevOps engineer assistant. Help users manage cloud infrastructure, "
+                      "deploy applications, monitor systems, and automate operations. "
+                      "Use kubectl, terraform, and other DevOps tools. Always confirm destructive actions.",
+        model="gpt-4o",
+        temperature=0.2,
+        max_tokens=8192,
+        tools=["shell_exec", "kubectl_exec", "terraform_plan", "terraform_apply", "monitor_logs"],
+        mcp_servers=[
+            MCPServerConfig(
+                name="kubernetes",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-kubernetes"],
+                transport="stdio",
+            ),
+            MCPServerConfig(
+                name="terraform",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-terraform"],
+                transport="stdio",
+            ),
+        ],
+        metadata={"category": "devops", "difficulty": "advanced"},
+    ),
+    AgentTemplate(
+        id="research-assistant",
+        name="Research Assistant",
+        description="An agent for literature review, summarization, and citation management.",
+        system_prompt="You are a research assistant. Help users find academic papers, summarize articles, "
+                      "manage citations, and organize research notes. Always cite sources properly.",
+        model="gpt-4o",
+        temperature=0.4,
+        max_tokens=8192,
+        tools=["search_web", "fetch_url", "read_file", "write_file", "manage_citations"],
+        mcp_servers=[
+            MCPServerConfig(
+                name="web-search",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-web-search"],
+                transport="stdio",
+            ),
+        ],
+        metadata={"category": "academic", "difficulty": "intermediate"},
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Catalog class
+# ---------------------------------------------------------------------------
+
+class AgentCatalog:
+    """
+    A catalog of pre-built agent templates.
+
+    Provides methods to list, search, get, and instantiate templates.
+    Supports loading custom templates from a directory.
+    """
+
+    def __init__(self, custom_templates_dir: Optional[Path] = None):
+        self._templates: Dict[str, AgentTemplate] = {}
+        self._load_builtin_templates()
+        if custom_templates_dir:
+            self._load_custom_templates(custom_templates_dir)
+
+    def _load_builtin_templates(self) -> None:
+        for template in _BUILTIN_TEMPLATES:
+            self._templates[template.id] = template
+
+    def _load_custom_templates(self, directory: Path) -> None:
+        if not directory.exists():
+            logger.warning(f"Custom templates directory not found: {directory}")
+            return
+        for file_path in directory.glob("*.json"):
+            try:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
+                template = AgentTemplate.from_dict(data)
+                self._templates[template.id] = template
+                logger.info(f"Loaded custom template: {template.id} from {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to load template from {file_path}: {e}")
+
+    def list_templates(self) -> List[AgentTemplate]:
+        """Return all available templates."""
+        return list(self._templates.values())
+
+    def get_template(self, template_id: str) -> Optional[AgentTemplate]:
+        """Get a template by its ID."""
+        return self._templates.get(template_id)
+
+    def search_templates(self,
